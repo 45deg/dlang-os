@@ -16,7 +16,7 @@ enum int taskbarHeight = 36;
 enum int titleHeight = 25;
 
 public import app_registry : App, apps;
-import app_registry : registration;
+import app_registry : registration, Icon;
 
 nothrow @nogc:
 
@@ -86,40 +86,40 @@ void drawShortcut(ref Screen screen, App app)
 
 private void icon(ref Screen screen, App app, int x, int y)
 {
-    final switch (app)
+    final switch (registration(app).icon)
     {
-        case App.files:
+        case Icon.files:
             screen.fill(Rect(x + 2, y + 5, 14, 7), 0xefc57e);
             screen.fill(Rect(x + 1, y + 10, 31, 20), 0xefc57e);
             screen.fill(Rect(x + 3, y + 14, 29, 16), 0xffda97);
             break;
-        case App.external:
-        case App.editor:
+        case Icon.generic:
+        case Icon.editor:
             screen.fill(Rect(x + 6, y + 1, 21, 30), 0xdde9f5);
             screen.fill(Rect(x + 22, y + 1, 5, 6), 0xa5bed8);
             foreach (row; 0 .. 3)
                 screen.fill(Rect(x + 10, y + 11 + row * 5, row == 2 ? 9 : 13, 2), 0x617c9b);
             break;
-        case App.counter:
+        case Icon.counter:
             screen.fill(Rect(x + 1, y + 4, 31, 26), 0x31546a);
             screen.fill(Rect(x + 6, y + 19, 4, 7), 0x65d3ba);
             screen.fill(Rect(x + 14, y + 15, 4, 11), 0x65d3ba);
             screen.fill(Rect(x + 22, y + 10, 4, 16), 0x65d3ba);
             break;
-        case App.calc:
+        case Icon.calc:
             screen.fill(Rect(x + 5, y + 2, 23, 29), 0xbac8db);
             screen.fill(Rect(x + 9, y + 6, 15, 7), 0x26455a);
             foreach (row; 0 .. 2)
                 foreach (column; 0 .. 3)
                     screen.fill(Rect(x + 9 + column * 6, y + 17 + row * 6, 3, 3), 0x415e77);
             break;
-        case App.game:
+        case Icon.game:
             screen.fill(Rect(x + 1, y + 5, 31, 24), 0x28394a);
             screen.fill(Rect(x + 7, y + 16, 14, 4), 0x65d3ba);
             screen.fill(Rect(x + 17, y + 12, 4, 6), 0x65d3ba);
             screen.fill(Rect(x + 24, y + 12, 4, 4), 0xf1bc67);
             break;
-        case App.monitor:
+        case Icon.monitor:
             screen.fill(Rect(x + 1, y + 4, 31, 23), 0xa9c1d7);
             screen.fill(Rect(x + 4, y + 7, 25, 17), 0x28394a);
             screen.fill(Rect(x + 7, y + 15, 7, 2), 0x71c5ed);

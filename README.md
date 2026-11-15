@@ -79,7 +79,7 @@ make test
 - `source/process.d` は最大15プロセスをラウンドロビンで実行します。同時に開けるウィンドウは7枚です。システムコールは `INT 0x80` を使い、ユーザープロセスが処理を譲らない場合はローカルAPICのタイマーで実行を中断します。
 - `source/gui.d` はデスクトップから起動したアプリに入力を届け、アプリから受け取った描画命令を検証してウィンドウの内側に合成します。
 
-Counterは `apps/counter/`、Files、Editor、Calc、Game、Monitor は `apps/builtin/` から ELF にビルドし、DlangFS に配置します。デスクトップのランチャーは、ディスク上の ELF を読み込み、それぞれを独立した Ring 3 プロセスとして起動します。`apps/experiments/` のサンプルをビルドして実行する手順とABIは [apps/README.md](apps/README.md) にあります。ランチャーからは全アプリを同じ手順で起動します。シェルから起動した未登録のELFも `guiCreate` で窓を作れ、タイトルはアプリが指定します。登録表は現状ビルド時の設定です。保存前の編集内容はゲストメモリにあります。実機での起動は未検証です。
+Counterは `apps/counter/`、Files、Editor、Calc、Game、Monitor は `apps/builtin/` から ELF にビルドし、DlangFS に配置します。デスクトップのランチャーは、ディスク上の ELF を読み込み、それぞれを独立した Ring 3 プロセスとして起動します。`apps/experiments/` のサンプルをビルドして実行する手順とABIは [apps/README.md](apps/README.md) にあります。ランチャーからは全アプリを同じ手順で起動します。シェルから起動した未登録のELFも `guiCreate` で窓を作れ、タイトルはアプリが指定します。起動時に `desktop.apps` があれば登録表を置き換えます。形式と追加手順は [docs/desktop-apps.md](docs/desktop-apps.md) にあります。保存前の編集内容はゲストメモリにあります。実機での起動は未検証です。
 
 ### 時刻源
 

@@ -1075,6 +1075,84 @@ def verify_volume_layout(qemu_command, root):
         expect_equal(invalid.read_bytes(), image)
 
 
+def verify_app_catalog(qemu_command, root):
+    disk = root / "catalog.img"
+    format_disk(disk)
+    binary = (APP_DIRECTORY / "counter.elf").read_bytes().replace(b"Counter", b"Example")
+    row = b"Clock|example.elf|generic|80|60|300|180|1|F8|-\n"
+    writer = b"Writer|writer.elf|editor|220|90|468|340|2|F9|document\n"
+    catalog = b"DLANGAPPS1\n" + row + writer
+    with boot(qemu_command, disk) as (console, _):
+        put_file(console, b"example.elf", binary)
+        put_file(console, b"writer.elf", (APP_DIRECTORY / "editor.elf").read_bytes())
+        put_file(console, b"desktop.apps", catalog)
+    with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
+        screen = root / "catalog.ppm"
+        qmp.keys("f8")  # 通常はEditorのキーだが、設定に従って未登録ELFを起動する。
+        expect_text(qmp, screen, 90, 65, "Example", 1,
+                    bytes.fromhex("135a56"), bytes.fromhex("ffffff"))
+        qmp.until_pixel(screen, 379, 239, bytes.fromhex("135a56"))
+        running, _ = wait_process_names(console, b"example.elf")
+        # 設定ファイルを書き換えても、起動時のスナップショットが有効なまま。
+        put_file(console, b"desktop.apps", b"broken")
+        qmp.keys("f8", "f8")
+        expect_equal(set(wait_process_names(console, b"example.elf")[0]), set(running))
+        qmp.keys("f2")  # 文書担当もファイル名や登録順ではなく設定から選ぶ。
+        wait_process_names(console, b"example.elf", b"writer.elf")
+        qmp.keys("esc", "f10")
+        wait_process_names(console, b"example.elf")
+        qmp.keys("f10")
+        wait_process_names(console)
+
+    malformed = [
+        b"DLANGAPPS1\n",  # 空登録
+        b"DLANGAPPS2\n" + row,
+        b"DLANGAPPS1\n" + row + row,  # 実行ファイル・キー重複
+        b"DLANGAPPS1\n" + row + row.replace(b"example.elf", b"other.elf"),
+        b"DLANGAPPS1\n" + writer + writer.replace(b"writer.elf", b"other.elf").replace(b"F9", b"F8"),
+        b"DLANGAPPS1\n" + row.replace(b"300|180", b"99999999999999999|180"),
+        b"DLANGAPPS1\n" + row.replace(b"300|180", b"0|180"),
+        b"DLANGAPPS1\n" + row.replace(b"generic", b"unknown"),
+        b"DLANGAPPS1\n" + row.replace(b"Clock", b"Cl\x00ck"),
+        b"DLANGAPPS1\n" + row + b"incomplete",  # 有効な先頭行も適用しない。
+        b"#" * 4097,
+        b"DLANGAPPS1\n" + b"".join(
+            row.replace(b"example.elf", f"app{i}.elf".encode()).replace(b"F8", b"-")
+            for i in range(13)),
+    ]
+    # 直前のbrokenを起点に、拒否された設定でもシェルから次の設定を保存できる。
+    for index in range(len(malformed) + 1):
+        with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
+            screen = root / "invalid-catalog.ppm"
+            error = "Cannot read desktop.apps; using default apps." if index and len(malformed[index - 1]) > 4096 else "Invalid desktop.apps; using default apps."
+            expect_text(qmp, screen, 16, 541, error, 1,
+                        bytes.fromhex("152843"), bytes.fromhex("ffffff"))
+            qmp.keys("f8")
+            expect_text(qmp, screen, 16, 541, "File not found.", 1,
+                        bytes.fromhex("152843"), bytes.fromhex("ffffff"))
+            expect_equal(process_list(console)[0], {})
+            if index < len(malformed):
+                put_file(console, b"desktop.apps", malformed[index])
+            else:
+                # 上限12件を受理し、CRLF・コメント・最終改行なしも扱う。
+                full = b"# custom launcher\r\nDLANGAPPS1\r\n" + b"".join(
+                    row.replace(b"example.elf", f"app{i}.elf".encode()).replace(b"F8", b"-")
+                    for i in range(11)) + row.replace(b"80|60", b"-2048|2048").rstrip(b"\n")
+                put_file(console, b"desktop.apps", full)
+    with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
+        qmp.keys("f2")
+        expect_text(qmp, root / "no-document-app.ppm", 16, 541,
+                    "No document application is registered.", 1,
+                    bytes.fromhex("152843"), bytes.fromhex("ffffff"))
+        expect_equal(process_list(console)[0], {})
+        qmp.keys("f1", "up", "ret")  # 12番目の登録へ折り返す。
+        expect_text(qmp, root / "clamped-catalog.ppm", 22, 377, "Example", 1,
+                    bytes.fromhex("135a56"), bytes.fromhex("ffffff"))
+        wait_process_names(console, b"example.elf")
+        qmp.keys("f10")
+        wait_process_names(console)
+
+
 def verify_external_gui(qemu_command, root):
     disk = root / "external-gui.img"
     format_disk(disk)
@@ -1204,6 +1282,7 @@ def main(qemu_command):
         verify_volume_layout(qemu_command, root)
         verify_storage_discovery(qemu_command, root)
         verify_external_gui(qemu_command, root)
+        verify_app_catalog(qemu_command, root)
 
     print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, v1 migration, persistence, and disk recovery")
 

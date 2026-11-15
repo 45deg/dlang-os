@@ -3,7 +3,8 @@
 module desktop;
 
 import application : launchDesktopApp;
-import app_registry : registration, documentApp;
+import app_registry : registration, documentApp, externalApp;
+import app_catalog : loadCatalog;
 import desktop_theme : App, accent, accentLight, appName, apps, appsButton, button, centeredText,
     divider, drawShortcut, drawWallpaper, ink, labelWithin, menuBounds, menuItem, muted, paper,
     shortcut, taskbarHeight, titleHeight, toolbar, warning;
@@ -53,6 +54,7 @@ struct Desktop
     {
         if (!screen.init())
             return false;
+        notice = loadCatalog();
         pointer.x = screen.width / 2;
         pointer.y = screen.height / 2;
         active = true;
@@ -158,7 +160,8 @@ struct Desktop
         }
 
         if (key == Key.newFile && (focused == noWindow || !registration(windows[focused].app).documents))
-            launch(documentApp());
+            if (launch(documentApp()) == noWindow)
+                return;
         if (focused == noWindow)
             return;
 
@@ -290,7 +293,7 @@ struct Desktop
         size_t slot = noWindow;
         uint instanceCount;
         const policy = registration(app);
-        if (app == App.external)
+        if (app == externalApp)
         {
             notice = "No document application is registered.";
             return noWindow;
@@ -343,8 +346,8 @@ struct Desktop
         const width = policy.bounds.width, height = policy.bounds.height;
         const x = policy.bounds.x + (policy.fromRight ? screen.width : 0) + offset * policy.cascadeX;
         const y = policy.bounds.y + offset * policy.cascadeY;
-        return Rect(minimum(x, screen.width - width - 12),
-            minimum(y, screen.height - taskbarHeight - height - 12), width, height);
+        return Rect(maximum(12, minimum(x, screen.width - width - 12)),
+            maximum(12, minimum(y, screen.height - taskbarHeight - height - 12)), width, height);
     }
 
     private void bringForward(size_t slot)
@@ -457,7 +460,7 @@ struct Desktop
             }
             else
             {
-                attachWindow(slot, App.external, pid);
+                attachWindow(slot, externalApp, pid);
                 attachGui(pid, bodyOf(windows[slot].bounds));
             }
             changed = true;

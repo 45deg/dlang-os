@@ -1,45 +1,68 @@
-/// 同梱デスクトップの登録情報。起動先・窓配置・多重起動・文書担当をここで定義する。
+/// デスクトップの登録表と、設定ファイルがない場合の同梱アプリの既定値。
 /// externalはシェルなどからguiCreateした、ランチャーに登録されていないアプリの既定値。
 module app_registry;
 
 import graphics : Rect;
 import ps2 : Key;
 
-enum App { files, editor, counter, calc, game, monitor, external }
-immutable App[] apps = [App.files, App.editor, App.counter, App.calc, App.game, App.monitor];
+alias App = size_t;
+enum appLimit = 12;
+enum App externalApp = appLimit;
+enum Icon { files, editor, counter, calc, game, monitor, generic }
 
 struct AppRegistration
 {
-    string title, executable;
+    const(char)[] title, executable;
     Rect bounds;
     int cascadeX, cascadeY;
     bool fromRight;
     uint instances; // 0はウィンドウ全体の上限まで。1は既存の窓を前面へ戻す。
     Key launchKey;
-    string keyLabel;
+    const(char)[] keyLabel;
     bool documents;
+    Icon icon = Icon.generic;
 }
 
-private immutable AppRegistration[] registrations = [
-    AppRegistration("Files", "files.elf", Rect(128, 49, 294, 354), 0, 0, false, 1, Key.openFiles, "F5"),
-    AppRegistration("Editor", "editor.elf", Rect(199, 76, 468, 340), 24, 29, false, 4, Key.newEditor, "F8", true),
-    AppRegistration("Counter", "counter.elf", Rect(-292, 113, 256, 123), -33, 81, true, 0, Key.newCounter, "F9"),
-    AppRegistration("Calc", "calc.elf", Rect(185, 64, 282, 312), 18, 20),
-    AppRegistration("Game", "game.elf", Rect(207, 94, 334, 303), 22, 25, false, 1),
-    AppRegistration("Monitor", "monitor.elf", Rect(-448, 55, 420, 319), -14, 17, true, 1),
-    AppRegistration("Application", "", Rect(-292, 113, 256, 123), -33, 81, true),
+private immutable AppRegistration[] defaults = [
+    AppRegistration("Files", "files.elf", Rect(128, 49, 294, 354), 0, 0, false, 1, Key.openFiles, "F5", false, Icon.files),
+    AppRegistration("Editor", "editor.elf", Rect(199, 76, 468, 340), 24, 29, false, 4, Key.newEditor, "F8", true, Icon.editor),
+    AppRegistration("Counter", "counter.elf", Rect(-292, 113, 256, 123), -33, 81, true, 0, Key.newCounter, "F9", false, Icon.counter),
+    AppRegistration("Calc", "calc.elf", Rect(185, 64, 282, 312), 18, 20, false, 0, Key.none, "", false, Icon.calc),
+    AppRegistration("Game", "game.elf", Rect(207, 94, 334, 303), 22, 25, false, 1, Key.none, "", false, Icon.game),
+    AppRegistration("Monitor", "monitor.elf", Rect(-448, 55, 420, 319), -14, 17, true, 1, Key.none, "", false, Icon.monitor),
 ];
-static assert(registrations.length == App.max + 1);
+private immutable external = AppRegistration("Application", "", Rect(-292, 113, 256, 123), -33, 81, true);
+private __gshared AppRegistration[appLimit] registrations;
+private __gshared App[appLimit] identifiers;
+private __gshared size_t count;
 
-ref const(AppRegistration) registration(App app) nothrow @nogc
+nothrow @nogc:
+
+const(App)[] apps() { return identifiers[0 .. count]; }
+
+/// 呼び出し側が文字列の生存期間を保証する。設定は起動時に一括適用する。
+void setRegistrations(scope const(AppRegistration)[] entries)
 {
-    return registrations[cast(size_t) app];
+    assert(entries.length > 0 && entries.length <= appLimit);
+    count = entries.length;
+    foreach (i; 0 .. count)
+    {
+        registrations[i] = entries[i];
+        identifiers[i] = i;
+    }
 }
 
-App documentApp() nothrow @nogc
+void defaultRegistrations() { setRegistrations(defaults); }
+
+ref const(AppRegistration) registration(App app)
+{
+    return app < count ? registrations[app] : external;
+}
+
+App documentApp()
 {
     foreach (app; apps)
         if (registration(app).documents)
             return app;
-    return App.external;
+    return externalApp;
 }
