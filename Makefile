@@ -144,13 +144,12 @@ check-ovmf:
 		echo "Pass OVMF_CODE=/path/to/x86_64/OVMF_CODE.fd." >&2; exit 1; }
 
 # 新規ディスクだけ初期化し、ELFを配置してから公開する。
-$(DATA_DISK): | check-ovmf all $(GUI_APP_ELFS) tools/install-apps.py
+$(DATA_DISK): | check-ovmf all $(GUI_APP_ELFS) tools/install-apps.py tools/format-disk.py
 	mkdir -p "$(@D)"
-	@set -eu; temp=$$(mktemp "$@.XXXXXX"); trap 'rm -f "$$temp"' 0; \
-		dd if=/dev/zero of="$$temp" bs=512 count=2048; \
-		printf 'DLANGFS2' | dd of="$$temp" conv=notrunc; \
-		$(INSTALL_APPS) --disk "$$temp" $(INSTALL_QEMU); \
-		ln "$$temp" "$@" || test -f "$@"
+	@set -eu; temp=$$(mktemp -d "$@.XXXXXX"); trap 'rm -f "$$temp/data.img"; rmdir "$$temp"' 0; \
+		"$(PYTHON)" tools/format-disk.py "$$temp/data.img"; \
+		$(INSTALL_APPS) --disk "$$temp/data.img" $(INSTALL_QEMU); \
+		ln "$$temp/data.img" "$@" || test -f "$@"
 
 install-apps: $(DATA_DISK)
 	$(INSTALL_APPS) --disk "$(DATA_DISK)" $(INSTALL_QEMU)

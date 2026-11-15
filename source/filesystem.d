@@ -1,4 +1,4 @@
-/// DlangFSの固定スロットと2世代保存。mountは旧形式を検査して新領域へ移す。
+/// DlangFSの配置をヘッダから読み、2世代で保存する。v1/v2の配置は互換定数として保持する。
 /// commitは本文を先に書き、世代番号とチェックサムを最後に公開する。
 module filesystem;
 
@@ -6,13 +6,17 @@ import ata : Sector, initDisk, readSector, sectorBytes, writeSector;
 
 public import file_api;
 
+// ディスク上の名前幅はABIのバッファ上限から独立した形式定義。
+private enum diskNameBytes = 24;
+static assert(maxNameBytes >= diskNameBytes);
+
 private struct Metadata
 {
     align(1):
     uint sequence;
     uint checksum;
     ushort length;
-    char[maxNameBytes] name = 0;
+    char[diskNameBytes] name = 0;
 }
 
 private union HeaderSector
@@ -46,10 +50,24 @@ static assert(Metadata.sizeof == 34 && Metadata.checksum.offsetof == 4);
 static assert(LegacyRecord.sizeof == sectorBytes && maxFileBytes % sectorBytes == 0);
 private enum legacyMagic = "DLANGFS1";
 private enum currentMagic = "DLANGFS2";
-private enum uint migrationMarkerLba = 1 + fileLimit * 2;
-private enum uint recordsLba = migrationMarkerLba + 1;
-private enum uint sectorsPerCopy = 1 + maxFileBytes / sectorBytes;
-private enum uint lastLba = recordsLba + fileLimit * 2 * sectorsPerCopy - 1;
+// v1/v2の既存ディスクは、今後API上限を変更しても同じ配置で読む。
+private enum uint oldFileSlots = 16;
+private enum uint oldFileBytes = 16 * 1024;
+private enum uint migrationMarkerLba = 33;
+private enum uint oldRecordsLba = 34;
+private enum uint oldSectorsPerCopy = 33;
+private enum layoutMagic = "DLANGFS3";
+
+private struct LayoutHeader
+{
+    align(1):
+    char[8] magic;
+    uint versionNumber, sectorSize, slots, fileBytes, recordsLba, sectorsPerCopy;
+    uint metadataBytes, nameBytes, checksum;
+}
+private union LayoutSector { LayoutHeader fields; Sector raw; }
+static assert(LayoutHeader.sizeof == 44 && LayoutHeader.checksum.offsetof == 40);
+private __gshared uint volumeSlots, volumeFileBytes, recordsLba, sectorsPerCopy;
 private enum uint hashSeed = 2166136261;
 
 private __gshared Entry[fileLimit] entries;
@@ -61,12 +79,28 @@ nothrow @nogc:
 
 bool mount()
 {
+    mounted = false;
+    entries[] = Entry.init;
     Sector header, last;
-    if (!initDisk() || !readSector(0, header) || !readSector(lastLba, last))
+    if (!initDisk() || !readSector(0, header))
         return false;
-    if (hasMagic(header, currentMagic))
-        mounted = loadCurrent();
-    else if (hasMagic(header, legacyMagic))
+    if (hasMagic(header, currentMagic) || hasMagic(header, legacyMagic))
+    {
+        volumeSlots = oldFileSlots;
+        volumeFileBytes = oldFileBytes;
+        recordsLba = oldRecordsLba;
+        sectorsPerCopy = oldSectorsPerCopy;
+    }
+    else if (!readLayout(header))
+        return false;
+    // 64bitで配置を検査してからATAのLBAへ変換する。
+    const end = cast(ulong) recordsLba + cast(ulong) volumeSlots * 2 * sectorsPerCopy;
+    if (volumeSlots == 0 || volumeSlots > fileLimit || volumeFileBytes == 0 || volumeFileBytes > maxFileBytes
+        || volumeFileBytes > ushort.max || recordsLba == 0
+        || sectorsPerCopy < 1 + (volumeFileBytes + sectorBytes - 1) / sectorBytes
+        || end > 0x1000_0000 || !readSector(cast(uint) (end - 1), last))
+        return false;
+    if (hasMagic(header, legacyMagic))
     {
         Sector marker;
         if (!readSector(migrationMarkerLba, marker))
@@ -76,12 +110,37 @@ bool mount()
         else if (isBlank(marker))
             mounted = loadLegacy() && migrateLegacy();
     }
+    else
+        mounted = loadCurrent();
     return mounted;
 }
 
+private bool readLayout(ref const Sector raw)
+{
+    LayoutSector header;
+    header.raw = raw;
+    const bytes = (cast(const(char)*) raw.ptr)[0 .. sectorBytes];
+    const fields = header.fields;
+    if (!equal(fields.magic[], layoutMagic) || fields.versionNumber != 3
+        || fields.sectorSize != sectorBytes || fields.metadataBytes != Metadata.sizeof
+        || fields.nameBytes != diskNameBytes
+        || fields.checksum != hashBytes(hashBytes(hashSeed, bytes[0 .. 40]), bytes[44 .. $]))
+        return false;
+    foreach (c; bytes[44 .. $])
+        if (c != 0) return false;
+    volumeSlots = fields.slots;
+    volumeFileBytes = fields.fileBytes;
+    recordsLba = fields.recordsLba;
+    sectorsPerCopy = fields.sectorsPerCopy;
+    return true;
+}
+
+uint capacity() { return mounted ? volumeSlots : 0; }
+uint fileSizeLimit() { return mounted ? volumeFileBytes : 0; }
+
 private bool loadCurrent()
 {
-    foreach (slot, ref entry; entries)
+    foreach (slot, ref entry; entries[0 .. volumeSlots])
     {
         Metadata first, second;
         const a = readCopy(copyLba(slot, false), first, entry.payload);
@@ -114,7 +173,7 @@ private CopyStatus readCopy(uint lba, out Metadata fields, ref char[maxFileBytes
     if (isBlank(header.raw))
         return CopyStatus.blank;
     fields = header.fields;
-    if (!validMetadata(fields, maxFileBytes))
+    if (!validMetadata(fields, volumeFileBytes))
         return CopyStatus.invalid;
 
     size_t copied;
@@ -137,7 +196,7 @@ private CopyStatus readCopy(uint lba, out Metadata fields, ref char[maxFileBytes
 private bool loadLegacy()
 {
     // 先にすべての旧レコードを検査する。破損を見つけた場合はディスクに一切書かない。
-    foreach (slot, ref entry; entries)
+    foreach (slot, ref entry; entries[0 .. volumeSlots])
     {
         LegacySector first = void;
         LegacySector second = void;
@@ -176,7 +235,7 @@ private bool validLegacy(ref const LegacyRecord old)
 private bool migrateLegacy()
 {
     const Sector blank = 0;
-    foreach (slot, ref entry; entries)
+    foreach (slot, ref entry; entries[0 .. volumeSlots])
     {
         // 移行途中で停止していた場合も、旧形式を正本として新領域を作り直す。
         if (!writeSector(copyLba(slot, true), blank))
@@ -211,7 +270,7 @@ ulong generation()
 
 const(char)[] nameAt(size_t slot)
 {
-    return mounted && slot < fileLimit ? filename(entries[slot].fields) : null;
+    return mounted && slot < volumeSlots ? filename(entries[slot].fields) : null;
 }
 
 /// dataは次のファイルシステム更新まで有効な、任意のバイト列のビュー。
@@ -219,7 +278,7 @@ FsResult open(scope const(char)[] name, out const(char)[] data, out FileVersion 
 {
     if (!mounted)
         return FsResult.unavailable;
-    if (!validFilename(name))
+    if (!validFilename(name) || name.length > diskNameBytes)
         return FsResult.invalidName;
 
     const slot = find(name);
@@ -237,9 +296,9 @@ FsResult save(scope const(char)[] name, scope const(char)[] data,
 {
     if (!mounted)
         return FsResult.unavailable;
-    if (!validFilename(name))
+    if (!validFilename(name) || name.length > diskNameBytes)
         return FsResult.invalidName;
-    if (data.length > maxFileBytes)
+    if (data.length > volumeFileBytes)
         return FsResult.tooLarge;
 
     auto slot = find(name);
@@ -250,7 +309,7 @@ FsResult save(scope const(char)[] name, scope const(char)[] data,
 
     if (slot == fileLimit)
     {
-        foreach (candidate, ref entry; entries)
+        foreach (candidate, ref entry; entries[0 .. volumeSlots])
             if (entry.fields.name[0] == 0)
             {
                 slot = candidate;
@@ -271,7 +330,7 @@ FsResult remove(scope const(char)[] name)
 {
     if (!mounted)
         return FsResult.unavailable;
-    if (!validFilename(name))
+    if (!validFilename(name) || name.length > diskNameBytes)
         return FsResult.invalidName;
     const slot = find(name);
     if (slot == fileLimit)
@@ -339,7 +398,7 @@ private size_t sectorLength(size_t remaining)
 
 private size_t find(scope const(char)[] name)
 {
-    foreach (slot, ref entry; entries)
+    foreach (slot, ref entry; entries[0 .. volumeSlots])
         if (equal(filename(entry.fields), name))
             return slot;
     return fileLimit;

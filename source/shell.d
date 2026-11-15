@@ -3,7 +3,7 @@ module shell;
 
 import application : launchFile;
 import cpu : haltCpu;
-import filesystem : FsResult, FileVersion, errorText, fileLimit, isMounted, isText, maxFileBytes,
+import filesystem : capacity, fileSizeLimit, FsResult, FileVersion, errorText, fileLimit, isMounted, isText, maxFileBytes,
     maxNameBytes, nameAt, open, remove, save, validFilename;
 import boot_info : usableMemoryKiB;
 import physical_memory : freeMemoryKiB;
@@ -302,6 +302,7 @@ private void dispatch(scope const(char)[] line, ref HexUpload upload, ref uint f
                 ~ "echo TEXT   Print text\r\n"
                 ~ "uname       Show OS and CPU architecture\r\n"
                 ~ "mem         Show usable memory at boot\r\n"
+                ~ "fsinfo      Show mounted volume limits\r\n"
                 ~ "ls          List saved files\r\n"
                 ~ "cat NAME    Read a text file\r\n"
                 ~ "write NAME TEXT   Create or replace a file\r\n"
@@ -335,6 +336,14 @@ private void dispatch(scope const(char)[] line, ref HexUpload upload, ref uint f
         runCommand(argument, foregroundPid);
     else if (sameText(name, "spawn"))
         spawnCommand(argument);
+    else if (sameText(name, "fsinfo"))
+    {
+        writeText("Files: ");
+        writeUnsigned(capacity());
+        writeText("  File bytes: ");
+        writeUnsigned(fileSizeLimit());
+        writeText(newLine);
+    }
     else if (sameText(name, "ps"))
         listProcesses();
     else if (sameText(name, "kill"))

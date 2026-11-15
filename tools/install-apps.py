@@ -12,8 +12,6 @@ import time
 
 PROMPT = b"dlang> "
 UPLOAD_READY = b"Send hex, then . on its own line. ! cancels.\r\n"
-FILE_LIMIT = 16
-FILE_BYTES = 16 * 1024
 
 
 class Serial:
@@ -51,14 +49,22 @@ def install(serial, apps):
     if b"Dlang OS (x86_64)\r\n" not in startup or b"Data disk unavailable" in startup:
         raise RuntimeError(f"DlangFS mount failed: {startup[-2048:]!r}")
 
+    serial.send(b"fsinfo\r")
+    limits = re.fullmatch(rb"fsinfo\r\nFiles: ([0-9]+)  File bytes: ([0-9]+)\r\n",
+                          serial.read_until(PROMPT))
+    if limits is None:
+        raise RuntimeError("Unable to read volume limits")
+    file_limit, file_bytes = map(int, limits.groups())
     serial.send(b"ls\r")
     reply = serial.read_until(PROMPT).splitlines()
     if not reply or reply[0] != b"ls" or any(not valid_name(name) for name in reply[1:]):
         raise RuntimeError(f"Unexpected file listing: {reply!r}")
     existing = set(reply[1:])
     missing = {name: contents for name, contents in apps.items() if name not in existing}
-    if len(existing) + len(missing) > FILE_LIMIT:
-        raise RuntimeError(f"DlangFS has {FILE_LIMIT - len(existing)} free slots; {len(missing)} are needed")
+    if any(len(data) > file_bytes for data in missing.values()):
+        raise RuntimeError(f"Application exceeds volume file limit ({file_bytes} bytes)")
+    if len(existing) + len(missing) > file_limit:
+        raise RuntimeError(f"DlangFS has {file_limit - len(existing)} free slots; {len(missing)} are needed")
 
     for name, data in missing.items():
         command = b"put " + name + b" " + str(len(data)).encode()
@@ -91,7 +97,7 @@ def main():
         for path in args.app:
             name = os.fsencode(path.name)
             content = path.read_bytes()
-            if not valid_name(name) or name in apps or not 0 < len(content) <= FILE_BYTES:
+            if not valid_name(name) or name in apps or not content:
                 raise RuntimeError(f"Invalid application name or size: {path}")
             apps[name] = content
 

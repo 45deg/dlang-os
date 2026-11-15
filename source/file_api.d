@@ -43,8 +43,8 @@ const(char)[] errorText(FsResult result)
         case FsResult.unavailable: return "Data disk unavailable.";
         case FsResult.notFound: return "File not found.";
         case FsResult.invalidName: return "Use 1-24 letters, digits, dots, _ or - (no leading dot).";
-        case FsResult.tooLarge: return "File is limited to 16384 bytes.";
-        case FsResult.full: return "Data disk has 16 files and is full.";
+        case FsResult.tooLarge: return "File exceeds the volume or application size limit.";
+        case FsResult.full: return "Data disk is full.";
         case FsResult.ioError: return "Disk write failed. Restart to remount.";
         case FsResult.conflict: return "File changed or exists. Use Save As.";
     }
