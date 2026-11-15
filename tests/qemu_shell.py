@@ -202,7 +202,7 @@ def pixel(data, width, x, y):
 FONT_DIRECTORY = Path(__file__).resolve().parents[1] / "assets" / "fonts"
 PROJECT = Path(__file__).resolve().parents[1]
 APP_DIRECTORY = PROJECT / "build" / "apps"
-DESKTOP_ELFS = ("calc.elf", "game.elf", "monitor.elf", "files.elf", "editor.elf")
+DESKTOP_ELFS = ("calc.elf", "game.elf", "monitor.elf", "files.elf", "editor.elf", "counter.elf")
 FONT_ATLASES = {
     (width, height): (FONT_DIRECTORY / f"ui-{width}x{height}.coverage").read_bytes()
     for width, height in ((8, 14), (16, 24))
@@ -913,11 +913,12 @@ def install_desktop_apps(qemu_command, disk):
 
 
 def verify_desktop_without_apps(console, qmp, screen):
-    qmp.keys("f8")
-    expect_text(qmp, screen, 16, 541, "File not found.", 1,
-                bytes.fromhex("152843"), bytes.fromhex("ffffff"))
-    expect_equal(process_list(console)[0], {})
-    expect_command(console, b"cat editor.elf", b"File not found.\r\n")
+    for key, name in (("f8", b"editor.elf"), ("f9", b"counter.elf")):
+        qmp.keys(key)
+        expect_text(qmp, screen, 16, 541, "File not found.", 1,
+                    bytes.fromhex("152843"), bytes.fromhex("ffffff"))
+        expect_equal(process_list(console)[0], {})
+        expect_command(console, b"cat " + name, b"File not found.\r\n")
 
 
 def verify_desktop_reads_disk(console, qmp, screen):

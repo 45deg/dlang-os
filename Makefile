@@ -25,8 +25,9 @@ FONT_LICENSE := assets/fonts/OFL.txt
 PHOBOS_APP_ELFS := build/apps/d_base64.elf build/apps/d_crc.elf build/apps/d_sha.elf
 D_APP_ELFS := build/apps/d_init.elf build/apps/d_heap.elf build/apps/d_exception.elf build/apps/d_array.elf \
               $(PHOBOS_APP_ELFS)
-GUI_APP_ELFS := $(addprefix build/apps/,$(addsuffix .elf,calc game monitor files editor))
-APP_ELFS := build/apps/sleep.elf build/apps/vm.elf build/apps/hello.elf build/apps/counter.elf $(GUI_APP_ELFS) $(D_APP_ELFS)
+BUILTIN_GUI_ELFS := $(addprefix build/apps/,$(addsuffix .elf,calc game monitor files editor))
+GUI_APP_ELFS := $(BUILTIN_GUI_ELFS) build/apps/counter.elf
+APP_ELFS := build/apps/sleep.elf build/apps/vm.elf build/apps/hello.elf $(GUI_APP_ELFS) $(D_APP_ELFS)
 GUI_COMMON := apps/builtin/gui_main.d apps/builtin/app_files.d apps/user_api.d \
               source/gui_abi.d source/file_api.d source/desktop_theme.d source/graphics.d source/numbers.d source/runtime.d
 GUI_INPUTS := $(GUI_COMMON) source/user_abi.d source/font.d source/ps2.d $(FONT_ATLASES) apps/app.ld Makefile
@@ -112,7 +113,7 @@ build/apps/editor.elf: GUI_VERSION := EditorApp
 build/apps/editor.elf: APP_D_FLAGS := $(filter-out -O2,$(APP_D_FLAGS)) -Oz
 build/apps/editor.elf: apps/builtin/editor.d
 
-$(GUI_APP_ELFS): $(GUI_INPUTS)
+$(BUILTIN_GUI_ELFS): $(GUI_INPUTS)
 	mkdir -p "$(@D)"
 	"$(LDC)" $(APP_D_FLAGS) $(APP_LINK_FLAGS) -betterC -d-version=GuiApp -d-version=$(GUI_VERSION) \
 		-Iapps/builtin -Jassets/fonts -of="$@" $(GUI_COMMON) $(filter-out $(GUI_INPUTS),$^)
@@ -122,7 +123,7 @@ $(KERNEL): build/kernel.elf
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
 
-build/kernel.elf: $(SOURCES) $(FONT_ATLASES) build/apps/counter.elf boot/kernel.ld Makefile
+build/kernel.elf: $(SOURCES) $(FONT_ATLASES) boot/kernel.ld Makefile
 	mkdir -p "$(@D)"
 	"$(LDC)" $(D_FLAGS) -link-internally -defaultlib= \
 		-L=-nostdlib -L=--gc-sections -L=-z -L=max-page-size=4096 -L=-T -L=boot/kernel.ld -of="$@" $(SOURCES)

@@ -1,13 +1,9 @@
-/// DlangFS上のELFを起動する。Counterは初回起動時にディスクに置く。
+/// DlangFS上のELFを読み込み、独立したユーザープロセスとして起動する。
 module application;
 
 import desktop_theme : App;
-import filesystem : FsResult, FileVersion, errorText, maxFileBytes, open, save;
+import filesystem : FsResult, FileVersion, errorText, open;
 import process : ElfStart, spawnElf;
-
-private enum counterName = "counter.elf";
-private immutable string counterPackage = import("counter.elf");
-static assert(counterPackage.length <= maxFileBytes);
 
 const(char)[] launchFile(scope const(char)[] name, out uint pid) nothrow @nogc
 {
@@ -33,24 +29,6 @@ const(char)[] launchDesktopApp(App app, out uint pid) nothrow @nogc
         case App.calc: return launchFile("calc.elf", pid);
         case App.game: return launchFile("game.elf", pid);
         case App.monitor: return launchFile("monitor.elf", pid);
-        case App.counter: return launchCounter(pid);
+        case App.counter: return launchFile("counter.elf", pid);
     }
-}
-
-const(char)[] launchCounter(out uint pid) nothrow @nogc
-{
-    const(char)[] image;
-    FileVersion stored;
-    const found = open(counterName, image, stored);
-    if (found == FsResult.notFound)
-    {
-        const empty = FileVersion.init;
-        const installed = save(counterName, counterPackage, &empty);
-        if (installed != FsResult.ok)
-            return errorText(installed);
-    }
-    else if (found != FsResult.ok)
-        return errorText(found);
-
-    return launchFile(counterName, pid);
 }
