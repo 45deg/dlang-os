@@ -1,6 +1,8 @@
 /// QEMU PCのプライマリIDEマスターをATA PIOで操作する。1回の転送は512バイト。
 module ata;
 
+import clock : milliseconds;
+
 import cpu : readPort, writePort, readPortWord, writePortWord;
 
 enum sectorBytes = 512;
@@ -80,7 +82,8 @@ private void settle()
 
 private bool waitStatus(ubyte required, ubyte forbidden, bool checkErrors = true)
 {
-    foreach (_; 0 .. 250_000)
+    const started = milliseconds();
+    while (milliseconds() - started < 100)
     {
         const status = readPort(controlPort);
         if (status == 0 || status == 0xff)

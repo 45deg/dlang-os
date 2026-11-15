@@ -8,11 +8,13 @@ import cpu : readCr3;
 import privilege : UserFrame, enterUser, initPrivilege, syscallVector, timerVector, userCode, userData;
 import elf : loadElf;
 import filesystem : maxNameBytes;
+import gui : guiCall;
+import gui_abi : maxProcesses;
 import serial : writeByte, writeText;
 import user_abi : Call, WindowEvent, callError, textLimit, titleLimit, writeLimit;
 import user_program : Program, programName, userMain;
 
-enum processLimit = 8;
+enum processLimit = maxProcesses;
 enum ElfStart { ok, unavailable, invalid }
 private enum ulong userStatusFlags = 0xcd5; // OF, DF, SF, ZF, AF, PF, CF
 private enum ulong userInterruptsEnabled = 0x202;
@@ -295,6 +297,10 @@ private void handleCall(ref Process task, ref const AddressSpace space)
         case Call.windowEvent:
             task.frame.rax = cast(ulong) task.event;
             task.event = WindowEvent.none;
+            break;
+        case Call.guiPoll, Call.guiPresent, Call.guiDirectory, Call.guiReadFile, Call.guiSaveFile,
+            Call.guiOpenDocument, Call.guiMonitor:
+            task.frame.rax = guiCall(task.info.pid, cast(Call) task.frame.rax, space, task.frame.rdi, task.frame.rsi);
             break;
         default:
             task.frame.rax = callError;

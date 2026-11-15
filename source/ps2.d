@@ -1,6 +1,8 @@
 /// i8042の受信バイトをキーボードのキーとマウスの移動・ボタンに変換する。
 module ps2;
 
+import clock : milliseconds;
+
 import cpu : readPort, writePort;
 
 enum Key : ushort
@@ -9,7 +11,6 @@ enum Key : ushort
     backspace = 8, tab = 9, enter = 10, escape = 27, deleteKey = 127,
     left = 256, right, up, down, newFile, save, saveAs, discard,
     openFiles, cycleWindow, newEditor, newCounter, closeWindow, appsMenu,
-    cutText, copyText, pasteText,
 }
 
 struct MouseEvent
@@ -183,9 +184,6 @@ struct Ps2
             switch (code)
             {
                 case 0x1f: return shiftKeys != 0 ? Key.saveAs : Key.save;
-                case 0x2d: return Key.cutText;
-                case 0x2e: return Key.copyText;
-                case 0x2f: return Key.pasteText;
                 default: return Key.none;
             }
         }
@@ -255,7 +253,8 @@ bool sendData(ubyte value)
 
 bool waitInputSpace()
 {
-    foreach (_; 0 .. 100_000)
+    const started = milliseconds();
+    while (milliseconds() - started < 100)
         if ((readPort(commandPort) & inputFull) == 0)
             return true;
     return false;
@@ -263,7 +262,8 @@ bool waitInputSpace()
 
 bool readReply(bool mouse, out ubyte value)
 {
-    foreach (_; 0 .. 100_000)
+    const started = milliseconds();
+    while (milliseconds() - started < 100)
     {
         const status = readPort(commandPort);
         if ((status & outputFull) == 0)

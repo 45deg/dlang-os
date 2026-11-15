@@ -1,4 +1,4 @@
-# UEFIローダーとカーネルをESPに置き、appsでディスク用ELFをビルドする。
+# UEFIローダーとカーネルをESPに置く。appsターゲットはアプリのELFをビルドする。
 # runとrun-guiは別のデータディスクを接続し、testは使い捨てのディスクを使う。
 LDC ?= $(firstword $(wildcard build/tools/ldc2-1.43.0-*/bin/ldc2) ldc2)
 PHOBOS_IMPORT ?= $(abspath $(dir $(realpath $(shell command -v "$(LDC)")))/../import)
@@ -25,7 +25,12 @@ FONT_LICENSE := assets/fonts/OFL.txt
 PHOBOS_APP_ELFS := build/apps/d_base64.elf build/apps/d_crc.elf build/apps/d_sha.elf
 D_APP_ELFS := build/apps/d_init.elf build/apps/d_heap.elf build/apps/d_exception.elf build/apps/d_array.elf \
               $(PHOBOS_APP_ELFS)
-APP_ELFS := build/apps/hello.elf build/apps/counter.elf $(D_APP_ELFS)
+GUI_APP_ELFS := $(addprefix build/apps/,$(addsuffix .elf,calc game monitor files editor))
+APP_ELFS := build/apps/hello.elf build/apps/counter.elf $(GUI_APP_ELFS) $(D_APP_ELFS)
+GUI_COMMON := apps/builtin/gui_main.d apps/builtin/app_files.d apps/user_api.d \
+              source/gui_abi.d source/file_api.d source/desktop_theme.d source/graphics.d source/numbers.d source/runtime.d
+GUI_INPUTS := $(GUI_COMMON) source/user_abi.d source/font.d source/ps2.d $(FONT_ATLASES) apps/app.ld Makefile
+BETTERC_APP_SUPPORT := apps/user_api.d source/user_abi.d apps/app.ld Makefile
 D_APP_RUNTIME := apps/d_start.d apps/runtime/object.d apps/runtime/d_allocation.d \
                  apps/user_api.d source/user_abi.d source/runtime.d
 D_APP_UNWIND := build/apps/d_unwind.o
@@ -45,27 +50,29 @@ QEMU_FLAGS = -machine pc,accel=tcg -m 128M -nic none -no-reboot \
              -device virtio-blk-pci,drive=esp,bootindex=1 \
              -monitor none -serial stdio
 DATA_DRIVE = -drive "if=ide,index=0,format=raw,file=$(abspath $(DATA_DISK))"
+INSTALL_APPS = "$(PYTHON)" tools/install-apps.py $(foreach app,$(GUI_APP_ELFS),--app "$(app)")
+INSTALL_QEMU = -- "$(QEMU)" $(QEMU_FLAGS) -display none
 
 .DELETE_ON_ERROR:
-.PHONY: all apps run run-gui test check-ovmf
+.PHONY: all apps install-apps run run-gui test check-ovmf
 
 all: $(KERNEL) $(BOOT_EFI) $(ESP)/FONT-LICENSE.txt
 apps: $(APP_ELFS)
 
 # LDCの登録リストで依存元が先に来るように渡し、起動時の依存順を検証する。
-build/apps/d_init.elf: apps/d_init.d apps/d_init_dependency.d
-build/apps/d_heap.elf: apps/d_heap.d
-build/apps/d_exception.elf: apps/d_exception.d
-build/apps/d_array.elf: apps/d_array.d
-build/apps/d_base64.elf: apps/d_base64.d build/apps/phobos/base64.o
-build/apps/d_crc.elf: apps/d_crc.d build/apps/phobos/digest/crc.o build/apps/phobos/ascii.o
-build/apps/d_sha.elf: apps/d_sha.d build/apps/phobos/digest/sha.o build/apps/phobos/ascii.o
+build/apps/d_init.elf: apps/experiments/d_init.d apps/experiments/d_init_dependency.d
+build/apps/d_heap.elf: apps/experiments/d_heap.d
+build/apps/d_exception.elf: apps/experiments/d_exception.d
+build/apps/d_array.elf: apps/experiments/d_array.d
+build/apps/d_base64.elf: apps/experiments/d_base64.d build/apps/phobos/base64.o
+build/apps/d_crc.elf: apps/experiments/d_crc.d build/apps/phobos/digest/crc.o build/apps/phobos/ascii.o
+build/apps/d_sha.elf: apps/experiments/d_sha.d build/apps/phobos/digest/sha.o build/apps/phobos/ascii.o
 
 $(PHOBOS_APP_ELFS): APP_IMPORT_FLAGS = -I"$(PHOBOS_IMPORT)"
 
 $(D_APP_ELFS): $(D_APP_RUNTIME) $(D_APP_UNWIND) apps/app.ld Makefile
 	mkdir -p "$(@D)"
-	"$(LDC)" $(FULL_D_FLAGS) $(APP_IMPORT_FLAGS) $(APP_LINK_FLAGS) -L=--entry=main -of="$@" \
+	"$(LDC)" $(FULL_D_FLAGS) -Iapps/experiments $(APP_IMPORT_FLAGS) $(APP_LINK_FLAGS) -L=--entry=main -of="$@" \
 		$(filter-out $(D_APP_RUNTIME),$(filter %.d,$^)) $(D_APP_RUNTIME) $(filter %.o,$^)
 	@test "$$(wc -c < "$@")" -le 16384 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
 
@@ -82,9 +89,31 @@ $(D_APP_UNWIND): apps/runtime/d_unwind.d $(D_APP_RUNTIME) Makefile
 	mkdir -p "$(@D)"
 	"$(LDC)" $(FULL_D_FLAGS) -fno-moduleinfo -c -of="$@" "$<"
 
-build/apps/%.elf: apps/%.d apps/user_api.d source/user_abi.d apps/app.ld Makefile
+build/apps/hello.elf: apps/experiments/hello.d $(BETTERC_APP_SUPPORT)
+build/apps/counter.elf: apps/counter/counter.d $(BETTERC_APP_SUPPORT)
+
+build/apps/hello.elf build/apps/counter.elf:
 	mkdir -p "$(@D)"
 	"$(LDC)" $(APP_D_FLAGS) $(APP_LINK_FLAGS) -betterC -of="$@" "$<" apps/user_api.d
+	@test "$$(wc -c < "$@")" -le 16384 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
+
+build/apps/calc.elf: GUI_VERSION := CalcApp
+build/apps/calc.elf: apps/builtin/calculator.d
+build/apps/game.elf: GUI_VERSION := GameApp
+build/apps/game.elf: apps/builtin/snake.d
+build/apps/monitor.elf: GUI_VERSION := MonitorApp
+build/apps/monitor.elf: apps/builtin/monitor.d
+build/apps/files.elf: GUI_VERSION := FilesApp
+build/apps/files.elf: apps/builtin/file_browser.d
+build/apps/editor.elf: GUI_VERSION := EditorApp
+# EditorのELFをDlangFSの16 KiBに収める。
+build/apps/editor.elf: APP_D_FLAGS := $(filter-out -O2,$(APP_D_FLAGS)) -Oz
+build/apps/editor.elf: apps/builtin/editor.d
+
+$(GUI_APP_ELFS): $(GUI_INPUTS)
+	mkdir -p "$(@D)"
+	"$(LDC)" $(APP_D_FLAGS) $(APP_LINK_FLAGS) -betterC -d-version=GuiApp -d-version=$(GUI_VERSION) \
+		-Iapps/builtin -Jassets/fonts -of="$@" $(GUI_COMMON) $(filter-out $(GUI_INPUTS),$^)
 	@test "$$(wc -c < "$@")" -le 16384 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
 
 $(KERNEL): build/kernel.elf
@@ -112,13 +141,17 @@ check-ovmf:
 	@test -n "$(OVMF_CODE)" && test -r "$(OVMF_CODE)" || { \
 		echo "Pass OVMF_CODE=/path/to/x86_64/OVMF_CODE.fd." >&2; exit 1; }
 
-# 既存データはそのまま使い、ファイルがないときにだけ初期化する。
-$(DATA_DISK):
+# 新規ディスクだけ初期化し、ELFを配置してから公開する。
+$(DATA_DISK): | check-ovmf all $(GUI_APP_ELFS) tools/install-apps.py
 	mkdir -p "$(@D)"
 	@set -eu; temp=$$(mktemp "$@.XXXXXX"); trap 'rm -f "$$temp"' 0; \
 		dd if=/dev/zero of="$$temp" bs=512 count=2048; \
 		printf 'DLANGFS2' | dd of="$$temp" conv=notrunc; \
+		$(INSTALL_APPS) --disk "$$temp" $(INSTALL_QEMU); \
 		ln "$$temp" "$@" || test -f "$@"
+
+install-apps: $(DATA_DISK)
+	$(INSTALL_APPS) --disk "$(DATA_DISK)" $(INSTALL_QEMU)
 
 run: check-ovmf all $(DATA_DISK)
 	"$(QEMU)" $(QEMU_FLAGS) $(DATA_DRIVE) -display none

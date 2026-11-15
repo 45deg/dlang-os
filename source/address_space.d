@@ -163,6 +163,30 @@ bool copyFromUser(ref const AddressSpace space, ulong address, scope char[] outp
     return true;
 }
 
+/// 入力イベントやファイルを、ユーザーが書き込めるページにだけ返す。
+bool copyToUser(ref const AddressSpace space, ulong address, scope const(char)[] input)
+{
+    if (address < userCodeAddress || address >= userHeapEnd || input.length > userHeapEnd - address)
+        return false;
+    const flags = present | user | writable;
+    size_t copied;
+    while (copied < input.length)
+    {
+        const index = (address - userCodeAddress) / pageBytes;
+        const entry = space.table.words[index];
+        if ((entry & flags) != flags)
+            return false;
+        auto bytes = cast(char*) directPage(entry & physicalMask);
+        auto within = address % pageBytes;
+        while (copied < input.length && within < pageBytes)
+        {
+            bytes[within++] = input[copied++];
+            ++address;
+        }
+    }
+    return true;
+}
+
 uint* mapLocalApic(ulong physicalPage)
 {
     const index = (apicAddress >> 39) & 511;

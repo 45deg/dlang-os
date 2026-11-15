@@ -2,7 +2,8 @@
 module apic_timer;
 
 import address_space : mapLocalApic;
-import core.volatile : volatileStore;
+import core.volatile : volatileStore, volatileLoad;
+import clock : milliseconds;
 import cpu : readMsr, writeMsr;
 import privilege : timerVector;
 
@@ -14,7 +15,7 @@ private enum uint timerConfig = 0x320;
 private enum uint initialCount = 0x380;
 private enum uint divideConfig = 0x3e0;
 private enum uint maskInterrupt = 1 << 16;
-private enum uint quantumTicks = 100_000;
+private __gshared uint quantumTicks;
 
 private __gshared uint* registers;
 private __gshared bool x2Apic;
@@ -39,6 +40,14 @@ bool initTimer()
     writeRegister(timerConfig, maskInterrupt | timerVector);
     writeRegister(initialCount, 0);
     writeRegister(divideConfig, 0x03); // APICの基準クロックの1/16
+    writeRegister(initialCount, uint.max);
+    const started = milliseconds();
+    while (milliseconds() - started < 20) {}
+    const elapsed = uint.max - readRegister(0x390);
+    writeRegister(initialCount, 0);
+    quantumTicks = elapsed / 4; // 5 msの実行枠
+    if (quantumTicks == 0 || elapsed == uint.max)
+        return false;
     writeRegister(timerConfig, timerVector);
     return true;
 }
@@ -61,4 +70,10 @@ private void writeRegister(uint offset, uint value)
         writeMsr(0x800 + offset / 16, value);
     else
         volatileStore(registers + offset / uint.sizeof, value);
+}
+
+private uint readRegister(uint offset)
+{
+    return x2Apic ? cast(uint) readMsr(0x800 + offset / 16)
+                  : volatileLoad(registers + offset / uint.sizeof);
 }

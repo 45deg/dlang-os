@@ -3,8 +3,8 @@ module editor;
 
 import desktop_theme : accent, accentLight, button, centeredText, divider, ink, labelWithin, muted, paper,
     toolbar, warning;
-import filesystem : FsResult, FileVersion, errorText, fileLimit, isMounted, isText, maxNameBytes, maxFileBytes,
-    open, save, validFilename;
+import app_files : documentBuffer, isMounted, open, save;
+import file_api : FsResult, FileVersion, errorText, fileLimit, isText, maxNameBytes, maxFileBytes, validFilename;
 import font : largeTextHeight, largeTextWidth;
 import graphics : Rect, Screen, maximum, minimum;
 import ps2 : Key;
@@ -14,14 +14,6 @@ private enum int cellWidth = largeTextWidth;
 private enum NameMode { inactive, create, saveCopy }
 
 enum EditorClick { none, select, scroll, close }
-
-struct EditorClipboard
-{
-    private char[maxFileBytes] text = void;
-    private size_t length;
-
-    bool hasText() const nothrow @nogc { return length != 0; }
-}
 
 struct Editor
 {
@@ -33,7 +25,6 @@ struct Editor
 
     private char[maxNameBytes] documentName = void;
     private size_t documentNameLength;
-    private char[maxFileBytes] document = void;
     private size_t length;
     private size_t caret;
     private size_t anchor;
@@ -47,6 +38,11 @@ struct Editor
 
     nothrow @nogc:
 
+    private @property char[] document() const
+    {
+        return documentBuffer();
+    }
+
     bool unsaved() const
     {
         return dirty || nameMode != NameMode.inactive;
@@ -57,19 +53,18 @@ struct Editor
         return documentNameLength != 0 ? documentName[0 .. documentNameLength] : "Text editor";
     }
 
-    bool isEditing(scope const(char)[] name) const
+    void openDocument(scope const(char)[] name)
     {
-        if (name.length != documentNameLength)
-            return false;
-        foreach (i, char c; name)
-            if (c != documentName[i])
-                return false;
-        return true;
-    }
-
-    void reopen(scope const(char)[] name, scope const(char)[] contents, FileVersion stored)
-    {
-        if (!unsaved() && !documentIsCurrent())
+        if (unsaved())
+            return;
+        const(char)[] contents;
+        FileVersion stored;
+        const result = open(name, contents, stored);
+        if (result != FsResult.ok)
+            message = errorText(result);
+        else if (!isText(contents))
+            message = "Binary file. Open a text document.";
+        else if (stored.slot != fileVersion.slot || stored.sequence != fileVersion.sequence)
             loadDocument(name, contents, stored);
     }
 
@@ -84,7 +79,7 @@ struct Editor
         }
     }
 
-    bool keyPress(Key key, ref EditorClipboard clipboard)
+    bool keyPress(Key key)
     {
         if (confirmDiscard && key != Key.discard)
         {
@@ -119,15 +114,6 @@ struct Editor
                     return confirmDiscardChanges();
                 confirmDiscard = dirty;
                 break;
-            case Key.cutText, Key.copyText:
-                copySelection(clipboard);
-                if (key == Key.cutText && anchor != caret)
-                    replaceText(selectedStart(), selectedEnd(), null);
-                break;
-            case Key.pasteText:
-                if (documentNameLength && clipboard.length)
-                    replaceText(selectedStart(), selectedEnd(), clipboard.text[0 .. clipboard.length]);
-                break;
             default:
                 if (documentNameLength != 0)
                     editDocument(key);
@@ -136,7 +122,7 @@ struct Editor
         return false;
     }
 
-    EditorClick click(Rect body, int x, int y, ref EditorClipboard clipboard)
+    EditorClick click(Rect body, int x, int y)
     {
         if (nameMode != NameMode.inactive)
         {
@@ -161,17 +147,11 @@ struct Editor
                 return EditorClick.none;
         }
         if (newButton(body).contains(x, y))
-            keyPress(Key.newFile, clipboard);
+            keyPress(Key.newFile);
         else if (saveButton(body).contains(x, y))
-            keyPress(Key.save, clipboard);
+            keyPress(Key.save);
         else if (copyButton(body).contains(x, y))
-            keyPress(Key.saveAs, clipboard);
-        else if (editButton(body, 0).contains(x, y))
-            keyPress(Key.cutText, clipboard);
-        else if (editButton(body, 1).contains(x, y))
-            keyPress(Key.copyText, clipboard);
-        else if (editButton(body, 2).contains(x, y))
-            keyPress(Key.pasteText, clipboard);
+            keyPress(Key.saveAs);
         else if (documentNameLength != 0)
         {
             const area = documentArea(body);
@@ -195,7 +175,6 @@ struct Editor
     private Rect copyButton(Rect body) const { return Rect(body.x + 124, body.y + 8, 70, 24); }
     private Rect confirmButton(Rect body) const { return Rect(body.x + 14, body.y + 162, 103, 28); }
     private Rect cancelButton(Rect body) const { return Rect(body.x + 127, body.y + 162, 74, 28); }
-    private Rect editButton(Rect body, int index) const { return Rect(body.x + 213 + 58 * index, body.y + 8, 52, 24); }
     private Rect discardButton(Rect body) const
     {
         return Rect(body.x + body.width - 158, body.y + body.height - 21, 72, 19);
@@ -309,7 +288,8 @@ struct Editor
 
     private void saveDocument(scope const(char)[] name, FileVersion expected)
     {
-        const result = save(name, document[0 .. length], &expected);
+        FileVersion stored;
+        const result = save(name, document[0 .. length], expected, stored);
         if (result != FsResult.ok)
         {
             if (result == FsResult.conflict)
@@ -321,9 +301,7 @@ struct Editor
             return;
         }
 
-        // 保存の直後に更新後の世代を取得する。編集中のカーソル位置は保持する。
-        const(char)[] saved;
-        open(name, saved, fileVersion);
+        fileVersion = stored;
         if (nameMode == NameMode.saveCopy)
         {
             foreach (i, char c; name)
@@ -393,16 +371,6 @@ struct Editor
 
     private size_t selectedStart() const { return anchor < caret ? anchor : caret; }
     private size_t selectedEnd() const { return anchor < caret ? caret : anchor; }
-
-    private void copySelection(ref EditorClipboard clipboard)
-    {
-        if (anchor == caret)
-            return;
-        const selection = document[selectedStart() .. selectedEnd()];
-        foreach (i, char c; selection)
-            clipboard.text[i] = c;
-        clipboard.length = selection.length;
-    }
 
     private void replaceText(size_t start, size_t end, scope const(char)[] replacement)
     {
@@ -505,7 +473,7 @@ struct Editor
         return changed;
     }
 
-    void draw(ref Screen screen, Rect body, bool active, bool clipboardHasText)
+    void draw(ref Screen screen, Rect body, bool active)
     {
         screen.fill(body, paper);
         screen.fill(Rect(body.x, body.y, body.width, 40), toolbar);
@@ -513,9 +481,6 @@ struct Editor
         button(screen, newButton(body), "New", !naming && isMounted());
         button(screen, saveButton(body), "Save", !naming && isMounted() && dirty);
         button(screen, copyButton(body), "Save As", !naming && isMounted() && documentNameLength != 0);
-        button(screen, editButton(body, 0), "Cut", !naming && anchor != caret);
-        button(screen, editButton(body, 1), "Copy", !naming && anchor != caret);
-        button(screen, editButton(body, 2), "Paste", !naming && documentNameLength != 0 && clipboardHasText);
 
         const x = body.x + 14;
         const bottom = body.y + body.height - 23;

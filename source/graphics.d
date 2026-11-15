@@ -30,11 +30,59 @@ struct Rect
     }
 }
 
+version (GuiApp)
+{
+    import gui_abi : DrawCommand, GuiFrame;
+
+    struct Screen
+    {
+        GuiFrame* frame;
+        int width, height;
+        bool overflow;
+
+        nothrow @nogc:
+
+        void fill(Rect rect, uint rgb)
+        {
+            if (rect.width <= 0 || rect.height <= 0)
+                return;
+            append(rect, rgb, null);
+        }
+
+        void text(int x, int y, scope const(char)[] label, uint rgb, int scale = 1)
+        {
+            if (label.length)
+                append(Rect(x, y, 0, scale), rgb, label);
+        }
+
+        void character(int x, int y, char c, uint rgb, int scale = 1)
+        {
+            if (c >= ' ' && c <= '~')
+                text(x, y, (&c)[0 .. 1], rgb, scale);
+        }
+
+        private void append(Rect rect, uint rgb, scope const(char)[] label)
+        {
+            if (frame.commandCount == frame.commands.length
+                || label.length > frame.text.length - frame.textCount)
+            {
+                overflow = true;
+                return;
+            }
+            frame.commands[frame.commandCount++] = DrawCommand(cast(short) rect.x, cast(short) rect.y,
+                cast(short) rect.width, cast(short) rect.height, rgb, frame.textCount, cast(ushort) label.length);
+            foreach (char c; label)
+                frame.text[frame.textCount++] = c;
+        }
+    }
+}
+else
 struct Screen
 {
     int width;
     int height;
 
+    private Rect clip;
     private uint* framebuffer;
     private size_t framebufferStride;
     private uint* backBuffer;
@@ -53,11 +101,26 @@ struct Screen
         framebuffer = frame.address;
         width = cast(int) frame.width;
         height = cast(int) frame.height;
+        clip = Rect(0, 0, width, height);
         framebufferStride = frame.pitchBytes / uint.sizeof;
         redShift = frame.redShift;
         greenShift = frame.greenShift;
         blueShift = frame.blueShift;
         return true;
+    }
+
+    void clipTo(Rect rect)
+    {
+        const left = maximum(0, rect.x);
+        const top = maximum(0, rect.y);
+        const right = minimum(width, rect.x + rect.width);
+        const bottom = minimum(height, rect.y + rect.height);
+        clip = Rect(left, top, maximum(0, right - left), maximum(0, bottom - top));
+    }
+
+    void resetClip()
+    {
+        clip = Rect(0, 0, width, height);
     }
 
     uint encode(uint rgb) const
@@ -78,11 +141,11 @@ struct Screen
 
     void fill(Rect rect, uint rgb)
     {
-        const right = minimum(width, rect.x + rect.width);
-        const bottom = minimum(height, rect.y + rect.height);
-        const left = maximum(0, rect.x);
+        const right = minimum(clip.x + clip.width, rect.x + rect.width);
+        const bottom = minimum(clip.y + clip.height, rect.y + rect.height);
+        const left = maximum(clip.x, rect.x);
         const color = encode(rgb);
-        for (int y = maximum(0, rect.y); y < bottom; ++y)
+        for (int y = maximum(clip.y, rect.y); y < bottom; ++y)
         {
             auto row = backBuffer + y * width;
             for (int x = left; x < right; ++x)
@@ -122,10 +185,10 @@ struct Screen
     void character(int x, int y, char c, uint rgb, int scale = 1)
     {
         const glyph = glyphFor(c, scale);
-        const left = maximum(0, -x);
-        const right = minimum(glyph.width, width - x);
-        const top = maximum(0, -y);
-        const bottom = minimum(glyph.height, height - y);
+        const left = maximum(0, clip.x - x);
+        const right = minimum(glyph.width, clip.x + clip.width - x);
+        const top = maximum(0, clip.y - y);
+        const bottom = minimum(glyph.height, clip.y + clip.height - y);
         if (right <= left || bottom <= top)
             return;
         const ink = encode(rgb);

@@ -2,7 +2,8 @@
 module kernel;
 
 import boot_info : BootInfo, initBootInfo;
-import cpu : pauseCpu;
+import cpu : pauseCpu, haltCpu;
+import clock : initClock;
 import desktop : Desktop;
 import filesystem : mount;
 import process : initProcesses, runNext;
@@ -19,6 +20,11 @@ extern(C) noreturn kernelMain(BootInfo* info) nothrow @nogc
     initSerial();
 
     writeText("Dlang OS (x86_64)\r\nType 'help' for commands.\r\n");
+    if (!initClock())
+    {
+        writeText("Clock calibration failed.\r\n");
+        haltCpu();
+    }
     if (!mount())
         writeText("Data disk unavailable.\r\n");
 

@@ -4,17 +4,7 @@ module filesystem;
 
 import ata : Sector, initDisk, readSector, sectorBytes, writeSector;
 
-enum fileLimit = 16;
-enum maxNameBytes = 24;
-enum maxFileBytes = 16 * 1024;
-
-enum FsResult { ok, unavailable, notFound, invalidName, tooLarge, full, ioError, conflict }
-
-struct FileVersion
-{
-    size_t slot = fileLimit;
-    uint sequence;
-}
+public import file_api;
 
 private struct Metadata
 {
@@ -224,25 +214,6 @@ const(char)[] nameAt(size_t slot)
     return mounted && slot < fileLimit ? filename(entries[slot].fields) : null;
 }
 
-bool validFilename(scope const(char)[] name)
-{
-    if (name.length == 0 || name.length > maxNameBytes || name[0] == '.')
-        return false;
-    foreach (char c; name)
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-              || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'))
-            return false;
-    return true;
-}
-
-bool isText(scope const(char)[] data)
-{
-    foreach (char c; data)
-        if (c != '\n' && (c < ' ' || c > '~'))
-            return false;
-    return true;
-}
-
 /// dataは次のファイルシステム更新まで有効な、任意のバイト列のビュー。
 FsResult open(scope const(char)[] name, out const(char)[] data, out FileVersion fileVersion)
 {
@@ -437,19 +408,4 @@ private bool equal(scope const(char)[] left, scope const(char)[] right)
         if (c != right[i])
             return false;
     return true;
-}
-
-const(char)[] errorText(FsResult result)
-{
-    final switch (result)
-    {
-        case FsResult.ok: return "Saved.";
-        case FsResult.unavailable: return "Data disk unavailable.";
-        case FsResult.notFound: return "File not found.";
-        case FsResult.invalidName: return "Use 1-24 letters, digits, dots, _ or - (no leading dot).";
-        case FsResult.tooLarge: return "File is limited to 16384 bytes.";
-        case FsResult.full: return "Data disk has 16 files and is full.";
-        case FsResult.ioError: return "Disk write failed. Restart to remount.";
-        case FsResult.conflict: return "File changed or exists. Use Save As.";
-    }
 }

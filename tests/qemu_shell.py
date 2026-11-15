@@ -200,7 +200,9 @@ def pixel(data, width, x, y):
 
 # 文字列の期待値は各テストに直接書き、字形の画素は同梱データから組み立てる。
 FONT_DIRECTORY = Path(__file__).resolve().parents[1] / "assets" / "fonts"
-APP_DIRECTORY = Path(__file__).resolve().parents[1] / "build" / "apps"
+PROJECT = Path(__file__).resolve().parents[1]
+APP_DIRECTORY = PROJECT / "build" / "apps"
+DESKTOP_ELFS = ("calc.elf", "game.elf", "monitor.elf", "files.elf", "editor.elf")
 FONT_ATLASES = {
     (width, height): (FONT_DIRECTORY / f"ui-{width}x{height}.coverage").read_bytes()
     for width, height in ((8, 14), (16, 24))
@@ -395,7 +397,7 @@ def verify_editor_mouse(console, qmp, image_path):
     toolbar = bytes.fromhex("e9eef4")
     muted = bytes.fromhex("405772")
     file = b"cat " + b"a" * 24
-    saved = b"oldxyhello\r\ndlanghello\r\n"
+    saved = b"world\r\ndlang\r\n"
 
     def click(x, y):
         qmp.move_to(x, y)
@@ -409,17 +411,13 @@ def verify_editor_mouse(console, qmp, image_path):
         qmp.move_to(295, y)
         qmp.button(False)
 
-    # 本文のドラッグとツールバーだけで、文字列を2行の間でコピー・移動する。
+    # マウスで選んだ範囲を文字入力で置き換え、別の範囲をBackspaceで削除する。
     select_line(188)
     qmp.until_pixel(image_path, 218, 208, highlight)
-    click(497, 121)
-    click(295, 214)
-    click(555, 121)
+    qmp.keys("w", "o", "r", "l", "d")
     select_line(240)
     qmp.until_pixel(image_path, 218, 260, highlight)
-    click(439, 121)
-    click(215, 188)
-    click(555, 121)
+    qmp.keys("backspace")
     click(291, 121)
     expect_text(qmp, image_path, 214, 154, "Saved", 1, bytes.fromhex("ffffff"), bytes.fromhex("135a56"))
     expect_command(console, file, saved)
@@ -434,7 +432,7 @@ def verify_editor_mouse(console, qmp, image_path):
     qmp.until_pixel(image_path, 645, 185, toolbar)
     click(647, 184)
     qmp.until_pixel(image_path, 645, 185, muted)
-    expect_text(qmp, image_path, 214, 183, "oldxyhello", 2, bytes.fromhex("ffffff"))
+    expect_text(qmp, image_path, 214, 183, "world", 2, bytes.fromhex("ffffff"))
 
     # 未保存で閉じる場合も、マウスで残すか破棄するかを選べる。
     click(654, 88)
@@ -463,6 +461,19 @@ def process_list(console):
         raise AssertionError(f"Missing process totals: {response!r}")
     return {int(pid): (name, int(value), int(slices), int(preemptions))
             for pid, name, value, slices, preemptions in rows}, tuple(map(int, totals.groups()))
+
+
+def wait_process_names(console, *names):
+    expected = sorted(names)
+    deadline = time.monotonic() + 5
+    while True:
+        running, totals = process_list(console)
+        actual = sorted(task[0] for task in running.values())
+        if actual == expected:
+            return running, totals
+        if time.monotonic() >= deadline:
+            expect_equal(actual, expected)
+        time.sleep(0.05)
 
 
 def stop_process(console, pid):
@@ -540,9 +551,9 @@ def verify_windows(console, qmp, image_path):
     qmp.keys("f9", "f9")
     qmp.until_pixel(image_path, 444, 277, accent)
     qmp.until_pixel(image_path, 477, 196, inactive)
-    running, totals = process_list(console)
-    expect_equal(len(running), 2)
-    if any(task[0] != b"counter.elf" or task[1] == 0 for task in running.values()):
+    running, totals = wait_process_names(console, b"editor.elf", b"counter.elf", b"counter.elf")
+    counters = {pid for pid, task in running.items() if task[0] == b"counter.elf"}
+    if any(running[pid][1] == 0 for pid in counters):
         raise AssertionError(f"Counter windows did not launch independent tasks: {running}")
     expect_file_bytes(console, b"counter.elf", (APP_DIRECTORY / "counter.elf").read_bytes())
 
@@ -552,7 +563,7 @@ def verify_windows(console, qmp, image_path):
     qmp.click()
     expect_text(qmp, image_path, 456, 334, "Paused", 2, bytes.fromhex("ffffff"))
     paused, _ = process_list(console)
-    top_pid = max(running)
+    top_pid = max(counters)
     qmp.keys("ret")
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -569,15 +580,15 @@ def verify_windows(console, qmp, image_path):
 
     qmp.keys("f10")
     qmp.until_pixel(image_path, 477, 196, accent)
-    remaining, after_close = process_list(console)
-    expect_equal(set(remaining), {min(running)})
+    remaining, after_close = wait_process_names(console, b"editor.elf", b"counter.elf")
+    expect_equal({pid for pid, task in remaining.items() if task[0] == b"counter.elf"}, {min(counters)})
     expect_equal(after_close, (totals[0] + 1, totals[1]))
-    stop_process(console, min(running))
+    stop_process(console, min(counters))
     qmp.until_pixel(image_path, 201, 78, accent)
-    expect_equal(process_list(console)[0], {})
+    wait_process_names(console, b"editor.elf")
 
 
-def verify_file_window(qmp, image_path):
+def verify_file_window(console, qmp, image_path):
     cursor = bytes.fromhex("152843")
     accent = bytes.fromhex("135a56")
     width, height = qmp.until_pixel(image_path, 0, 0, bytes.fromhex("142941"))
@@ -590,10 +601,20 @@ def verify_file_window(qmp, image_path):
     qmp.until_pixel(image_path, 36, 367, cursor)
     qmp.click()
     qmp.until_pixel(image_path, 130, 51, accent)
-    # Filesの3番目の行はcopy.txt。保存した本文が別のエディタ窓に表示される。
-    qmp.keys("down", "down", "ret")
+    # ELFもファイル一覧に載るので、シリアルの一覧でcopy.txtの行を調べる。
+    names = console.command(b"ls\r").splitlines()[1:]
+    qmp.keys(*("down",) * names.index(b"copy.txt"), "ret")
     qmp.until_pixel(image_path, 225, 107, accent)
     expect_text(qmp, image_path, 238, 238, "dlang", 2, bytes.fromhex("ffffff"))
+    running, _ = wait_process_names(console, b"files.elf", b"editor.elf")
+
+    # 開き直しても同じEditorプロセスのウィンドウが前面に戻る。
+    qmp.keys("f5")
+    qmp.until_pixel(image_path, 130, 51, accent)
+    qmp.keys("ret")
+    qmp.until_pixel(image_path, 225, 107, accent)
+    reopened, _ = wait_process_names(console, b"files.elf", b"editor.elf")
+    expect_equal(set(reopened), set(running))
 
 
 def verify_new_apps(console, qmp, image_path):
@@ -623,6 +644,7 @@ def verify_new_apps(console, qmp, image_path):
     click(388, 339)
     expect_text(qmp, image_path, 382, 131, "3.75", 2, paper)
     preview("calc")
+    wait_process_names(console, b"calc.elf")
 
     qmp.keys("c", "1", "dot", "5")
     click(426, 225)
@@ -653,18 +675,25 @@ def verify_new_apps(console, qmp, image_path):
     qmp.keys("up")
     qmp.until_region_color(image_path, 224, 240, 300, 13, bytes.fromhex("aeebce"))
     preview("game")
+    wait_process_names(console, b"game.elf")
 
     # 別アプリが前面になるとゲームが止まり、Monitorの表はユーザープロセスの増減に追従する。
     click(160, 203)
     qmp.until_pixel(image_path, 340, 74, accent)
     qmp.until_pixel(image_path, 275, 242, ink)
-    qmp.until_pixel(image_path, 523, 158, divider)
+    wait_process_names(console, b"game.elf", b"monitor.elf")
+    qmp.until_pixel(image_path, 536, 158, accent)
+    qmp.until_pixel(image_path, 549, 158, divider)
     running = spawn_process(console, b"spin")
-    qmp.until_pixel(image_path, 523, 158, accent)
+    qmp.until_pixel(image_path, 549, 158, accent)
     qmp.until_pixel(image_path, 350, 207, bytes.fromhex("d9ece8"))
     preview("monitor")
     stop_process(console, running)
-    qmp.until_pixel(image_path, 523, 158, divider)
+    qmp.until_pixel(image_path, 549, 158, divider)
+    qmp.keys("f10")
+    wait_process_names(console, b"game.elf")
+    qmp.keys("f10")
+    wait_process_names(console)
 
 
 def old_record(sequence, name, contents):
@@ -785,6 +814,38 @@ def verify_phobos(console):
     expect_equal(process_list(console), (before, (totals[0] + len(vectors), totals[1])))
 
 
+def install_desktop_apps(qemu_command, disk):
+    command = [sys.executable, str(PROJECT / "tools" / "install-apps.py"), "--disk", str(disk)]
+    for name in DESKTOP_ELFS:
+        command += ["--app", str(APP_DIRECTORY / name)]
+    subprocess.run([*command, "--", *qemu_command], check=True, timeout=90)
+
+
+def verify_desktop_without_apps(console, qmp, screen):
+    qmp.keys("f8")
+    expect_text(qmp, screen, 16, 541, "File not found.", 1,
+                bytes.fromhex("152843"), bytes.fromhex("ffffff"))
+    expect_equal(process_list(console)[0], {})
+    expect_command(console, b"cat editor.elf", b"File not found.\r\n")
+
+
+def verify_desktop_reads_disk(console, qmp, screen):
+    kernel = (PROJECT / "build" / "uefi-esp" / "kernel.elf").read_bytes()
+    for name in DESKTOP_ELFS:
+        elf = (APP_DIRECTORY / name).read_bytes()
+        expect_file_bytes(console, name.encode(), elf)
+        if elf in kernel:
+            raise AssertionError(f"{name} is embedded in the kernel")
+
+    put_file(console, b"editor.elf", b"invalid ELF")
+    qmp.keys("f8")
+    expect_text(qmp, screen, 16, 541, "Unsupported or invalid ELF executable.", 1,
+                bytes.fromhex("152843"), bytes.fromhex("ffffff"))
+    expect_equal(process_list(console)[0], {})
+    expect_file_bytes(console, b"editor.elf", b"invalid ELF")
+    put_file(console, b"editor.elf", (APP_DIRECTORY / "editor.elf").read_bytes())
+
+
 def verify_counter_reads_disk(console, qmp, screen):
     binary = (APP_DIRECTORY / "counter.elf").read_bytes()
     expect_file_bytes(console, b"counter.elf", binary)
@@ -822,7 +883,9 @@ def verify_migration_and_large_files(qemu_command, root):
         expect_equal(console.read_until(PROMPT), b"Invalid hex data or byte count. File was not changed.\r\n")
         expect_file_bytes(console, b"large.txt", large_text)
 
-        # Filesから6 KiB超の文書を開き、末尾に追記してEditorから保存する。
+        # 移行済みディスクにもELFを配置し、Filesから6 KiB超の文書を開いて追記・保存する。
+        for name in ("files.elf", "editor.elf"):
+            put_file(console, name.encode(), (APP_DIRECTORY / name).read_bytes())
         qmp.keys("f5", "down", "ret")
         screen = root / "large-editor.ppm"
         qmp.until_pixel(screen, 225, 107, bytes.fromhex("135a56"))
@@ -859,10 +922,20 @@ def main(qemu_command):
             verify_shell(console)
             verify_files(console)
             verify_processes(console)
+            verify_desktop_without_apps(console, qmp, root / "screen.ppm")
+        install_desktop_apps(qemu_command, disk)
+        with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
+            verify_desktop_reads_disk(console, qmp, root / "screen.ppm")
+            qmp.keys("esc")  # ファイルの起動エラー表示を閉じて、初期画面を確認する。
             verify_desktop(console, qmp, root / "screen.ppm")
             verify_windows(console, qmp, root / "screen.ppm")
             verify_new_apps(console, qmp, root / "screen.ppm")
             verify_disk_elf(console)
+
+        # 実験用ELFとデスクトップ用ELFで、16ファイルの枠を取り合わないようにする。
+        experiments = root / "experiments.img"
+        experiments.write_bytes(b"DLANGFS2" + bytes(1024 * 1024 - 8))
+        with boot(qemu_command, experiments) as (console, _):
             verify_d_initialization(console)
             verify_d_heap(console)
             verify_d_exceptions(console)
@@ -877,7 +950,7 @@ def main(qemu_command):
             expect_command(console, b"cat history.txt", b"second version\r\n")
             run_hello(console)
             verify_counter_reads_disk(console, qmp, root / "screen.ppm")
-            verify_file_window(qmp, root / "screen.ppm")
+            verify_file_window(console, qmp, root / "screen.ppm")
             verify_halt(console)
 
         # 新版の本文だけを破損させ、再マウントで旧版に戻ることを検証する。
@@ -897,7 +970,7 @@ def main(qemu_command):
         expect_equal(unknown_disk.read_bytes(), unknown_data)
         verify_migration_and_large_files(qemu_command, root)
 
-    print("PASS: QEMU disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, v1 migration, persistence, and disk recovery")
+    print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, v1 migration, persistence, and disk recovery")
 
 
 if __name__ == "__main__":

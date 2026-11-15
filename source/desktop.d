@@ -1,26 +1,25 @@
 /// デスクトップとウィンドウの重なり順を管理し、入力から描画と画面転送を更新する。
+/// launchでアプリを起動し、syncAppWindowsで終了やファイルを開く要求を反映する。
 module desktop;
 
-import application : launchCounter;
-import calculator : Calculator;
-import cpu : ticks;
+import application : launchDesktopApp;
+import clock : milliseconds;
 import desktop_theme : App, accent, accentLight, appName, apps, appsButton, button, centeredText,
     divider, drawShortcut, drawWallpaper, ink, labelWithin, menuBounds, menuItem, muted, paper,
     shortcut, taskbarHeight, titleHeight, toolbar, warning;
-import editor : Editor, EditorClick, EditorClipboard;
-import filesystem : FsResult, FileVersion, errorText, fileLimit, generation, isMounted, isText, nameAt, open;
+import filesystem : FsResult, FileVersion, errorText, isText, open;
 import graphics : Rect, Screen, maximum, minimum;
-import monitor : drawMonitor;
+import gui : attachGui, detachGui, drawGui, guiDirty, guiTitle, sendGuiEvent, setGuiFocus, takeDocumentRequest,
+    takeGuiChange;
+import gui_abi : DirectoryEntry, GuiEvent, maxGuiWindows;
 import numbers : decimalText;
-import process : AppWindow, processLimit, takeWindowRequest, windowFor, windowInput, windowTitleFor;
+import process : AppWindow, ProcessInfo, infoFor, processLimit, takeWindowRequest, windowFor, windowInput, windowTitleFor;
 import ps2 : InputKind, Key, MouseEvent, Ps2;
-import snake : Snake;
 import user_abi : WindowEvent;
 
-private enum windowLimit = 7;
+private enum windowLimit = maxGuiWindows;
 private enum editorLimit = 4;
 private enum noWindow = windowLimit;
-private enum int fileRowHeight = 16;
 private immutable string[apps.length] launchKeys = ["F5", "F8", "F9", "", "", ""];
 
 private struct Window
@@ -28,6 +27,7 @@ private struct Window
     Rect bounds;
     App app;
     uint pid;
+    DirectoryEntry pendingDocument;
     bool minimized;
     bool open;
 }
@@ -44,22 +44,13 @@ struct Desktop
 
     // 番号は窓を閉じるまで固定。orderは手前に出したときだけ並べ替える。
     private Window[windowLimit] windows;
-    private Editor[windowLimit] editors;
-    private EditorClipboard clipboard;
-    private Calculator[windowLimit] calculators;
-    private Snake game;
     private size_t[windowLimit] order;
     private size_t windowCount;
     private size_t focused = noWindow;
     private size_t dragged = noWindow;
-    private EditorClick editorDrag;
+    private bool draggingContent;
     private int grabX, grabY;
     private ulong lastLivePaint;
-
-    private size_t[fileLimit] fileSlots;
-    private size_t fileCount;
-    private size_t selectedFile;
-    private ulong seenGeneration;
 
     nothrow @nogc:
 
@@ -72,7 +63,6 @@ struct Desktop
         active = true;
         if (!devices.init())
             notice = "PS/2 unavailable. Use the serial shell.";
-        refreshFiles();
         redraw(fullScreen());
         return true;
     }
@@ -84,11 +74,7 @@ struct Desktop
 
         const event = devices.poll();
         const windowsChanged = syncAppWindows();
-        const filesChanged = seenGeneration != generation();
-        if (filesChanged)
-            refreshFiles();
-        const now = ticks();
-        const gameDamage = advanceGame(now);
+        const now = milliseconds();
 
         if (event.kind == InputKind.keyboard)
         {
@@ -101,21 +87,24 @@ struct Desktop
             Rect movedWindow;
             const changed = handleMouse(event.mouse, movedWindow);
             const cursorDamage = oldCursor.covering(pointer.bounds());
-            if (windowsChanged || filesChanged || (changed && movedWindow.width == 0))
+            if (windowsChanged || (changed && movedWindow.width == 0))
                 redraw(fullScreen());
-            else if (movedWindow.width != 0 || gameDamage.width != 0)
-                redraw(movedWindow.covering(gameDamage).covering(cursorDamage).covering(liveDamage()));
+            else if (movedWindow.width != 0)
+                redraw(movedWindow.covering(cursorDamage).covering(liveDamage()));
             else if (event.mouse.dx || event.mouse.dy)
                 present(cursorDamage);
         }
-        else if (windowsChanged || filesChanged)
+        else if (windowsChanged)
             redraw(fullScreen());
-        else if (gameDamage.width != 0 || now - lastLivePaint >= 120_000_000)
+        else if (now - lastLivePaint >= 50)
         {
-            const damage = gameDamage.covering(liveDamage());
+            const damage = liveDamage();
             if (damage.width > 0)
                 redraw(damage);
         }
+        foreach (slot; order[0 .. windowCount])
+            if (windows[slot].app != App.counter)
+                setGuiFocus(windows[slot].pid, focused == slot && !menuOpen && !windows[slot].minimized);
     }
 
     private Rect fullScreen() const
@@ -178,26 +167,11 @@ struct Desktop
         if (focused == noWindow)
             return;
 
-        if (windows[focused].app == App.editor)
-        {
-            if (editors[focused].keyPress(key, clipboard))
-                close(focused);
-        }
-        else if (windows[focused].app == App.calc)
-            calculators[focused].keyPress(key);
-        else if (windows[focused].app == App.game)
-            game.keyPress(key, ticks());
-        else if (windows[focused].app == App.counter && (key == Key.enter || key == ' '))
-            windowInput(windows[focused].pid, WindowEvent.activate);
-        else if (windows[focused].app == App.files)
-        {
-            if (key == Key.up && selectedFile > 0)
-                --selectedFile;
-            else if (key == Key.down && selectedFile + 1 < fileCount)
-                ++selectedFile;
-            else if (key == Key.enter)
-                openSelectedFile();
-        }
+        const window = &windows[focused];
+        if (window.app != App.counter)
+            sendGuiEvent(window.pid, GuiEvent.key, cast(ushort) key);
+        else if (key == Key.enter || key == ' ')
+            windowInput(window.pid, WindowEvent.activate);
     }
 
     private void toggleMenu()
@@ -215,18 +189,14 @@ struct Desktop
         pointer.leftDown = event.leftDown;
         if (dragged != noWindow)
         {
-            if (editorDrag != EditorClick.none)
+            if (draggingContent)
             {
                 const body = bodyOf(windows[dragged].bounds);
-                auto editor = &editors[dragged];
-                const changed = editorDrag == EditorClick.select
-                    ? editor.dragSelection(body, pointer.x, pointer.y)
-                    : editor.scrollPointer(body, pointer.y);
+                sendGuiEvent(windows[dragged].pid, event.leftDown ? GuiEvent.drag : GuiEvent.release,
+                    0, pointer.x - body.x, pointer.y - body.y);
                 if (!event.leftDown)
                     dragged = noWindow;
-                if (changed)
-                    movedWindow = body;
-                return changed;
+                return false;
             }
             if (!event.leftDown)
             {
@@ -298,29 +268,22 @@ struct Desktop
                 if (pointer.y < window.bounds.y + titleHeight)
                 {
                     dragged = slot;
-                    editorDrag = EditorClick.none;
+                    draggingContent = false;
                     grabX = pointer.x - window.bounds.x;
                     grabY = pointer.y - window.bounds.y;
                 }
-                else if (window.app == App.editor)
-                {
-                    const action = editors[slot].click(bodyOf(window.bounds), pointer.x, pointer.y, clipboard);
-                    if (action == EditorClick.close)
-                        close(slot);
-                    else if (action == EditorClick.select || action == EditorClick.scroll)
-                    {
-                        dragged = slot;
-                        editorDrag = action;
-                    }
-                }
-                else if (window.app == App.files)
-                    clickFiles(bodyOf(window.bounds));
-                else if (window.app == App.calc)
-                    calculators[slot].click(bodyOf(window.bounds), pointer.x, pointer.y);
-                else if (window.app == App.game)
-                    game.click(bodyOf(window.bounds), pointer.x, pointer.y, ticks());
                 else if (window.app == App.counter)
                     windowInput(window.pid, WindowEvent.activate);
+                else
+                {
+                    const body = bodyOf(window.bounds);
+                    sendGuiEvent(window.pid, GuiEvent.click, 0, pointer.x - body.x, pointer.y - body.y);
+                    if (window.app == App.editor)
+                    {
+                        dragged = slot;
+                        draggingContent = true;
+                    }
+                }
             }
             return true;
         }
@@ -360,25 +323,23 @@ struct Desktop
             return noWindow;
         }
 
-        if (app == App.counter)
-        {
-            uint pid;
-            notice = launchCounter(pid);
-            return noWindow; // ELFがwindowOpenを呼び出した時点で窓を作る。
-        }
-        if (app == App.editor)
-            editors[slot] = Editor.init;
-        else if (app == App.calc)
-            calculators[slot] = Calculator.init;
-        else if (app == App.game)
-            game = Snake.init;
-        attachWindow(slot, app, 0);
+        uint pid;
+        notice = launchDesktopApp(app, pid);
+        if (pid == 0 || app == App.counter)
+            return noWindow; // Counterは既存のwindowOpenで窓を要求する。
+
+        attachWindow(slot, app, pid);
+        attachGui(pid, bodyOf(windows[slot].bounds));
         return slot;
     }
 
     private void attachWindow(size_t slot, App app, uint pid)
     {
-        windows[slot] = Window(initialBounds(app), app, pid, false, true);
+        windows[slot] = Window.init;
+        windows[slot].bounds = initialBounds(app);
+        windows[slot].app = app;
+        windows[slot].pid = pid;
+        windows[slot].open = true;
         order[windowCount++] = slot;
         focused = slot;
     }
@@ -448,15 +409,15 @@ struct Desktop
 
     private void close(size_t slot)
     {
-        const window = windows[slot];
-        if (window.app == App.editor && editors[slot].unsaved())
+        const window = &windows[slot];
+        if (window.app != App.counter)
         {
-            bringForward(slot);
-            editors[slot].keepOpen();
+            if (window.app == App.editor)
+                bringForward(slot);
+            sendGuiEvent(window.pid, GuiEvent.close);
             return;
         }
-        if (window.app == App.counter)
-            windowInput(window.pid, WindowEvent.close);
+        windowInput(window.pid, WindowEvent.close);
         remove(slot);
     }
 
@@ -480,11 +441,29 @@ struct Desktop
         bool changed;
         foreach (slot, ref window; windows)
         {
-            AppWindow info;
-            if (window.open && window.app == App.counter && !windowFor(window.pid, info))
+            if (!window.open)
+                continue;
+            AppWindow legacy;
+            ProcessInfo process;
+            const alive = window.app == App.counter ? windowFor(window.pid, legacy) : infoFor(window.pid, process);
+            if (!alive)
             {
+                if (window.app != App.counter)
+                    detachGui(window.pid);
                 remove(slot);
                 changed = true;
+                continue;
+            }
+            DirectoryEntry request;
+            if (window.app == App.files && takeDocumentRequest(window.pid, request))
+            {
+                openFile(request.name[0 .. request.length]);
+                changed = true;
+            }
+            if (window.app != App.counter && takeGuiChange(window.pid))
+            {
+                window.pendingDocument.length = 0;
+                changed = changed || !window.minimized;
             }
         }
         foreach (processSlot; 0 .. processLimit)
@@ -511,22 +490,9 @@ struct Desktop
     {
         Rect damage;
         foreach (ref window; windows)
-            if (window.open && !window.minimized && (window.app == App.counter || window.app == App.monitor))
+            if (window.open && !window.minimized && window.app == App.counter)
                 damage = damage.covering(bodyOf(window.bounds));
         return damage;
-    }
-
-    private Rect advanceGame(ulong now)
-    {
-        foreach (slot, ref window; windows)
-            if (window.open && window.app == App.game)
-            {
-                const changed = game.advance(now, !window.minimized && !menuOpen && focused == slot);
-                if (changed && !window.minimized)
-                    return bodyOf(window.bounds);
-                break;
-            }
-        return Rect.init;
     }
 
     private Rect withShadow(Rect bounds)
@@ -534,38 +500,10 @@ struct Desktop
         return Rect(bounds.x, bounds.y, bounds.width + 4, bounds.height + 5);
     }
 
-    private void refreshFiles()
+    private void openFile(scope const(char)[] name)
     {
-        const previous = fileCount > 0 ? fileSlots[selectedFile] : fileLimit;
-        fileCount = 0;
-        foreach (slot; 0 .. fileLimit)
-            if (nameAt(slot).length)
-                fileSlots[fileCount++] = slot;
-        if (fileCount == 0 || selectedFile >= fileCount)
-            selectedFile = 0;
-        foreach (i; 0 .. fileCount)
-            if (fileSlots[i] == previous)
-                selectedFile = i;
-        seenGeneration = generation();
-    }
-
-    private void clickFiles(Rect body)
-    {
-        if (openButton(body).contains(pointer.x, pointer.y))
-            openSelectedFile();
-        else
-        {
-            const items = Rect(body.x + 8, body.y + 46, body.width - 16, cast(int) fileCount * fileRowHeight);
-            if (items.contains(pointer.x, pointer.y))
-                selectedFile = cast(size_t) ((pointer.y - items.y) / fileRowHeight);
-        }
-    }
-
-    private void openSelectedFile()
-    {
-        if (fileCount == 0)
+        if (name.length == 0)
             return;
-        const name = nameAt(fileSlots[selectedFile]);
         const(char)[] contents;
         FileVersion storedVersion;
         const result = open(name, contents, storedVersion);
@@ -582,16 +520,27 @@ struct Desktop
         }
 
         foreach (slot, ref window; windows)
-            if (window.open && window.app == App.editor && editors[slot].isEditing(name))
+        {
+            if (!window.open || window.app != App.editor)
+                continue;
+            const pending = window.pendingDocument.name[0 .. window.pendingDocument.length];
+            if (pending == name || guiTitle(window.pid) == name)
             {
-                editors[slot].reopen(name, contents, storedVersion);
+                sendGuiEvent(window.pid, GuiEvent.openDocument, 0, 0, 0, name);
                 bringForward(slot);
                 return;
             }
+        }
 
         const slot = launch(App.editor);
         if (slot != noWindow)
-            editors[slot].loadDocument(name, contents, storedVersion);
+        {
+            auto window = &windows[slot];
+            window.pendingDocument.length = cast(ubyte) name.length;
+            foreach (i, char c; name)
+                window.pendingDocument.name[i] = c;
+            sendGuiEvent(window.pid, GuiEvent.openDocument, 0, 0, 0, name);
+        }
     }
 
     private Rect taskButton(int index) const
@@ -615,11 +564,6 @@ struct Desktop
         return Rect(bounds.x + bounds.width - 52, bounds.y, 26, titleHeight);
     }
 
-    private Rect openButton(Rect body)
-    {
-        return Rect(body.x + 10, body.y + 9, 52, 24);
-    }
-
     private void redraw(Rect damage)
     {
         drawWallpaper(screen);
@@ -637,7 +581,7 @@ struct Desktop
         }
         if (menuOpen)
             drawMenu();
-        lastLivePaint = ticks();
+        lastLivePaint = milliseconds();
         present(damage);
     }
 
@@ -645,7 +589,8 @@ struct Desktop
     {
         if (windows[slot].app == App.counter)
             return windowTitleFor(windows[slot].pid);
-        return windows[slot].app == App.editor ? editors[slot].title() : appName(windows[slot].app);
+        const title = guiTitle(windows[slot].pid);
+        return title.length ? title : appName(windows[slot].app);
     }
 
     private void drawTaskbar()
@@ -693,7 +638,7 @@ struct Desktop
         screen.fill(bounds, activeWindow ? accent : muted);
         labelWithin(screen, Rect(bounds.x + 10, bounds.y, bounds.width - 67, titleHeight),
             windowTitle(slot), paper);
-        if (window.app == App.editor && editors[slot].unsaved())
+        if (window.app == App.editor && guiDirty(window.pid))
             centeredText(screen, Rect(bounds.x + bounds.width - 67, bounds.y, 14, titleHeight), "*", paper);
 
         const minimizeRect = minimizeButton(bounds);
@@ -703,34 +648,12 @@ struct Desktop
         screen.fill(closeRect, warning);
         centeredText(screen, closeRect, "x", paper);
         const body = bodyOf(bounds);
-        final switch (window.app)
+        if (window.app == App.counter)
+            drawCounter(body, window.pid);
+        else
         {
-            case App.files: drawFiles(body); break;
-            case App.editor: editors[slot].draw(screen, body, activeWindow, clipboard.hasText()); break;
-            case App.counter: drawCounter(body, window.pid); break;
-            case App.calc: calculators[slot].draw(screen, body); break;
-            case App.game: game.draw(screen, body); break;
-            case App.monitor: drawMonitor(screen, body); break;
-        }
-    }
-
-    private void drawFiles(Rect body)
-    {
-        screen.fill(body, paper);
-        screen.fill(Rect(body.x, body.y, body.width, 41), toolbar);
-        button(screen, openButton(body), "Open", fileCount != 0);
-        screen.text(body.x + 72, body.y + 17, "Select a file, then Open", muted);
-        if (fileCount == 0)
-            screen.text(body.x + 12, body.y + 54, isMounted() ? "No saved files" : "Data disk unavailable", muted);
-        foreach (i; 0 .. fileCount)
-        {
-            const row = Rect(body.x + 8, body.y + 46 + cast(int) i * fileRowHeight, body.width - 16, fileRowHeight);
-            if (i == selectedFile)
-            {
-                screen.fill(row, accentLight);
-                labelWithin(screen, Rect(row.x + 5, row.y, 8, row.height), ">", accent);
-            }
-            labelWithin(screen, Rect(row.x + 19, row.y, row.width - 19, row.height), nameAt(fileSlots[i]), ink);
+            screen.fill(body, paper);
+            drawGui(window.pid, screen, body);
         }
     }
 

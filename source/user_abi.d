@@ -1,7 +1,8 @@
 /// システムコールとELFプロセスのヒープ範囲をカーネルとアプリで共有する。
 module user_abi;
 
-enum Call : ulong { yield, publish, exit, write, windowOpen, windowText, windowEvent }
+enum Call : ulong { yield, publish, exit, write, windowOpen, windowText, windowEvent,
+    guiPoll, guiPresent, guiDirectory, guiReadFile, guiSaveFile, guiOpenDocument, guiMonitor }
 enum WindowEvent : ulong { none, activate, close }
 enum ulong callError = ulong.max;
 enum uint titleLimit = 24;

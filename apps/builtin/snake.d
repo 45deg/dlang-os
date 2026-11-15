@@ -11,7 +11,7 @@ private enum rows = 13;
 private enum cells = columns * rows;
 private enum cellSize = 15;
 private enum initialLength = 3;
-private enum ulong stepTicks = 360_000_000;
+private enum ulong stepMilliseconds = 150;
 
 private enum Direction { right, down, left, up }
 private enum Phase { idle, playing, paused, lost, won }
@@ -72,7 +72,7 @@ struct Snake
             phase = Phase.paused;
             return true;
         }
-        if (now - lastStep < stepTicks)
+        if (now - lastStep < stepMilliseconds)
             return false;
 
         lastStep = now;

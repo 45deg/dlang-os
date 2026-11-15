@@ -1,6 +1,16 @@
-# Dlang OSのユーザーアプリ
+# Dlang OSのアプリ
 
-`make apps` で `build/apps/` に `hello.elf`、`counter.elf`、`d_init.elf`、`d_heap.elf`、`d_exception.elf`、`d_array.elf` と下記の Phobos サンプルをビルドします。`hello` と `counter` は `-betterC` を使い、入口は `extern(C) noreturn appMain() nothrow @nogc` です。
+- `builtin/` にデスクトップから起動する Ring 3 アプリの Files、Editor、Calc、Game、Monitor の実装があります。
+- `counter/` にデスクトップから起動できる Ring 3 アプリの Counter があります。
+- `experiments/` に `hello` と、DランタイムやPhobosの動作を検証するサンプルがあります。
+
+`app.ld` と `user_api.d` は ELF アプリの共通ファイルです。`d_start.d` と `runtime/` は通常の D アプリに使います。
+
+## ELFのビルドと実行
+
+`make apps` で `build/apps/` に ELF を生成します。`files.elf`、`editor.elf`、`calc.elf`、`game.elf`、`monitor.elf` は DlangFS に配置し、デスクトップから起動します。既存のデータディスクへ追加するには、QEMU を終了して `make install-apps` を実行します。同名の ELF を入れ替えるには、ゲストのシリアルシェルで `put` を使います。
+
+デスクトップの5アプリ、`hello`、`counter` は `-betterC` を使い、入口は `extern(C) noreturn appMain() nothrow @nogc` です。
 
 `hello.elf` を起動するには、ホストで `wc -c < build/apps/hello.elf` と `xxd -p -c 32 build/apps/hello.elf` を実行します。ゲストのシリアルシェルで `put hello.elf バイト数` を実行し、16進の本文と `.` だけの行を入力します。続いて `run hello.elf` を実行すると、シリアルにメッセージが出てアプリが終了します。
 
@@ -8,7 +18,7 @@
 
 `d_init.elf` も同じ手順でディスクに置き、`run d_init.elf` で起動します。依存先とアプリ自身の `shared static this()` が順に実行され、D の `void main()` が `D shared static constructors ran before main.` と表示して終了します。
 
-別の通常の D アプリを作るときは、Makefile の `D_APP_ELFS` にターゲットとアプリのソースを追加します。アプリ用ランタイムは LDC 1.43.0 の `x86_64-unknown-none-elf` に対応しています。`d_start` が `.init_array` を実行し、`ModuleInfo` をたどって依存先から共有コンストラクタを呼んだ後、D の `main` を呼びます。モジュール依存は循環のない構成を使います。
+通常の D アプリの実験を追加するときは、`experiments/` にソースを置き、Makefile の `D_APP_ELFS` に ELF のターゲットを加え、その依存ファイルにソースを指定します。アプリ用ランタイムは LDC 1.43.0 の `x86_64-unknown-none-elf` に対応しています。`d_start` が `.init_array` を実行し、`ModuleInfo` をたどって依存先から共有コンストラクタを呼んだ後、D の `main` を呼びます。モジュール依存は循環のない構成を使います。
 
 `d_heap.elf` は、スカラー、構造体、クラス、動的配列の `new` と `~=` を試すサンプルです。要素または同じ要素型のスライスを追加でき、必要に応じて以前の配列をコピーして拡張します。配列の要素はバイト単位でコピーできる型が対象です。`run d_heap.elf` は成功メッセージを出した後、意図的に割り当ての上限に達して終了します。
 
@@ -45,7 +55,7 @@ LDC 1.43.0 で各 API の代表的な使い方を試した結果です。QEMU �
 
 ## ローダーとABI
 
-ロードできるのは、静的にリンクしたx86-64・リトルエンディアンのELF64 `ET_EXEC` です。1実行ファイルはDlangFSの上限16 KiBまでです。`PT_LOAD` は `0x00400000` から `0x00408000` 未満の範囲に、4 KiB境界で重ならないよう配置します。同じセグメントに書き込みと実行の両方の権限は指定できません。実行権限のあるファイル範囲に入口を置きます。動的リンク、再配置、TLS、引数の受け渡しは未実装です。
+ロードできるのは、静的にリンクしたx86-64・リトルエンディアンのELF64 `ET_EXEC` です。DlangFSに置く実行ファイルは16 KiBまでです。`PT_LOAD` は `0x00400000` から `0x00408000` 未満の範囲に、4 KiB境界で重ならないよう配置します。同じセグメントに書き込みと実行の両方の権限は指定できません。実行権限のあるファイル範囲に入口を置きます。動的リンク、再配置、TLS、引数の受け渡しは未実装です。
 
 各プロセスは別のページテーブルと16 KiBのファイル上限とは独立した32 KiBのロード領域を持ちます。1ページのスタックは `0x00410000` から `0x00411000` 未満にあります。ELFプロセスは `0x00412000` から `0x00422000` 未満にプロセス専用の64 KiBのヒープを持ちます。スタックとヒープは書き込み可能で、実行は禁止です。起動時に `.bss` とヒープをゼロで初期化します。
 
@@ -62,3 +72,9 @@ LDC 1.43.0 で各 API の代表的な使い方を試した結果です。QEMU �
 | 6 | `windowEvent` | 入力なし（0）、本文クリックまたはEnter/Space（1）、閉じる通知（2）を返す |
 
 Counterは入力イベントで一時停止と再開を切り替え、閉じる通知を受けると自分で終了します。ウィンドウ枠と文字描画はカーネルが担当します。
+
+## デスクトップアプリのGUI
+
+`builtin/gui_main.d` が入力を受け取り、アプリの状態を更新して描画命令をまとめて送ります。描画座標はウィンドウ本文を原点とし、カーネルは命令を検証して本文の範囲に収めます。`source/gui_abi.d` が入力、描画、ファイル操作、統計のデータ構造を定義しています。
+
+このGUI用のシステムコールはデスクトップのランチャーから起動した5アプリが使います。Files は DlangFS の一覧を取得し、選んだ名前をデスクトップに渡します。Editor はシステムコールで文書を読み書きし、保存時にファイルの世代を照合します。Monitor は起動時の空きメモリとプロセス一覧を取得します。
