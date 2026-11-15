@@ -1,22 +1,22 @@
-/// Limineから起動し、ディスクをマウントしてからシェルとGUIの入出力を順に確認する。
+/// UEFIローダーから起動情報を受け取り、ディスク、プロセス、GUIを初期化してシェルを開始する。
 module kernel;
 
-import cpu : haltCpu, pauseCpu;
+import boot_info : BootInfo, initBootInfo;
+import cpu : pauseCpu;
 import desktop : Desktop;
 import filesystem : mount;
-import limine : supportsRequestedRevision;
 import process : initProcesses, runNext;
 import serial : initSerial, writeText;
 import shell : Shell;
 
-extern(C) noreturn kernelMain() nothrow @nogc
+// 最大16 KiBの文書を持つ各ウィンドウと転送領域を、ブートスタックの外に置く。
+private __gshared Desktop desktop;
+private __gshared Shell shell;
+
+extern(C) noreturn kernelMain(BootInfo* info) nothrow @nogc
 {
+    initBootInfo(info);
     initSerial();
-    if (!supportsRequestedRevision())
-    {
-        writeText("Unsupported Limine base revision.\r\n");
-        haltCpu();
-    }
 
     writeText("Dlang OS (x86_64)\r\nType 'help' for commands.\r\n");
     if (!mount())
@@ -25,11 +25,9 @@ extern(C) noreturn kernelMain() nothrow @nogc
     if (!initProcesses())
         writeText("User processes unavailable.\r\n");
 
-    Desktop desktop;
     if (!desktop.init())
         writeText("Framebuffer unavailable. Use the serial shell.\r\n");
 
-    Shell shell;
     shell.start();
     while (true)
     {

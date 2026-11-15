@@ -1,4 +1,4 @@
-/// LDCが配列と構造体のコピー・初期化に使うメモリ関数をDで提供する。
+/// LDCが配列と構造体のコピー・初期化・比較に使うメモリ関数をDで提供する。
 module runtime;
 
 import core.volatile : volatileLoad, volatileStore;
@@ -21,4 +21,17 @@ void* memset(void* destination, int value, size_t count)
     foreach (i; 0 .. count)
         volatileStore(output + i, cast(ubyte) value);
     return destination;
+}
+
+int memcmp(const(void)* left, const(void)* right, size_t count)
+{
+    auto a = cast(const(ubyte)*) left;
+    auto b = cast(const(ubyte)*) right;
+    foreach (i; 0 .. count)
+    {
+        const difference = cast(int) a[i] - cast(int) b[i];
+        if (difference != 0)
+            return difference;
+    }
+    return 0;
 }

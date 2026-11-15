@@ -5,9 +5,9 @@ import address_space : pageBytes, userCodeAddress;
 import core.volatile : volatileLoad, volatileStore;
 import ldc.attributes : section;
 import ldc.llvmasm : __asm;
+import user_abi : Call;
 
-enum Program : ulong { counter, spin, exit, fault }
-enum Call : ulong { yield, publish, exit }
+enum Program : ulong { counter, spin, exit, fault, elf }
 
 /// 引数はプログラムの種類。再配置時に使う外部参照を作らない。
 @section(".user_app")
@@ -48,5 +48,6 @@ const(char)[] programName(Program program) pure nothrow @nogc
         case Program.spin: return "spin";
         case Program.exit: return "exit";
         case Program.fault: return "fault";
+        case Program.elf: return "elf";
     }
 }

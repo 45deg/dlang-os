@@ -1,20 +1,21 @@
 /// デスクトップとウィンドウの重なり順を管理し、入力から描画と画面転送を更新する。
 module desktop;
 
+import application : launchCounter;
 import calculator : Calculator;
 import cpu : ticks;
 import desktop_theme : App, accent, accentLight, appName, apps, appsButton, button, centeredText,
     divider, drawShortcut, drawWallpaper, ink, labelWithin, menuBounds, menuItem, muted, paper,
     shortcut, taskbarHeight, titleHeight, toolbar, warning;
 import editor : Editor, EditorClick, EditorClipboard;
-import filesystem : FsResult, FileVersion, errorText, fileLimit, generation, isMounted, nameAt, open;
+import filesystem : FsResult, FileVersion, errorText, fileLimit, generation, isMounted, isText, nameAt, open;
 import graphics : Rect, Screen, maximum, minimum;
 import monitor : drawMonitor;
 import numbers : decimalText;
-import process : ProcessInfo, infoFor, spawn, stop;
+import process : AppWindow, processLimit, takeWindowRequest, windowFor, windowInput, windowTitleFor;
 import ps2 : InputKind, Key, MouseEvent, Ps2;
 import snake : Snake;
-import user_program : Program;
+import user_abi : WindowEvent;
 
 private enum windowLimit = 7;
 private enum editorLimit = 4;
@@ -82,7 +83,7 @@ struct Desktop
             return;
 
         const event = devices.poll();
-        const windowsChanged = removeFinishedCounters();
+        const windowsChanged = syncAppWindows();
         const filesChanged = seenGeneration != generation();
         if (filesChanged)
             refreshFiles();
@@ -186,6 +187,8 @@ struct Desktop
             calculators[focused].keyPress(key);
         else if (windows[focused].app == App.game)
             game.keyPress(key, ticks());
+        else if (windows[focused].app == App.counter && (key == Key.enter || key == ' '))
+            windowInput(windows[focused].pid, WindowEvent.activate);
         else if (windows[focused].app == App.files)
         {
             if (key == Key.up && selectedFile > 0)
@@ -316,6 +319,8 @@ struct Desktop
                     calculators[slot].click(bodyOf(window.bounds), pointer.x, pointer.y);
                 else if (window.app == App.game)
                     game.click(bodyOf(window.bounds), pointer.x, pointer.y, ticks());
+                else if (window.app == App.counter)
+                    windowInput(window.pid, WindowEvent.activate);
             }
             return true;
         }
@@ -355,15 +360,11 @@ struct Desktop
             return noWindow;
         }
 
-        uint pid;
         if (app == App.counter)
         {
-            pid = spawn(Program.counter);
-            if (pid == 0)
-            {
-                notice = "Unable to start a user process.";
-                return noWindow;
-            }
+            uint pid;
+            notice = launchCounter(pid);
+            return noWindow; // ELFがwindowOpenを呼び出した時点で窓を作る。
         }
         if (app == App.editor)
             editors[slot] = Editor.init;
@@ -371,10 +372,15 @@ struct Desktop
             calculators[slot] = Calculator.init;
         else if (app == App.game)
             game = Snake.init;
+        attachWindow(slot, app, 0);
+        return slot;
+    }
+
+    private void attachWindow(size_t slot, App app, uint pid)
+    {
         windows[slot] = Window(initialBounds(app), app, pid, false, true);
         order[windowCount++] = slot;
         focused = slot;
-        return slot;
     }
 
     private Rect initialBounds(App app) const
@@ -450,7 +456,7 @@ struct Desktop
             return;
         }
         if (window.app == App.counter)
-            stop(window.pid);
+            windowInput(window.pid, WindowEvent.close);
         remove(slot);
     }
 
@@ -469,17 +475,34 @@ struct Desktop
             focusTop();
     }
 
-    private bool removeFinishedCounters()
+    private bool syncAppWindows()
     {
         bool changed;
         foreach (slot, ref window; windows)
         {
-            ProcessInfo info;
-            if (window.open && window.app == App.counter && !infoFor(window.pid, info))
+            AppWindow info;
+            if (window.open && window.app == App.counter && !windowFor(window.pid, info))
             {
                 remove(slot);
                 changed = true;
             }
+        }
+        foreach (processSlot; 0 .. processLimit)
+        {
+            const pid = takeWindowRequest(processSlot);
+            if (pid == 0)
+                continue;
+            size_t slot;
+            while (slot < windowLimit && windows[slot].open)
+                ++slot;
+            if (slot == windowLimit)
+            {
+                notice = "Close a window before opening another.";
+                windowInput(pid, WindowEvent.close);
+            }
+            else
+                attachWindow(slot, App.counter, pid);
+            changed = true;
         }
         return changed;
     }
@@ -552,6 +575,12 @@ struct Desktop
             return;
         }
 
+        if (!isText(contents))
+        {
+            notice = "Binary file. Use get NAME in the serial shell.";
+            return;
+        }
+
         foreach (slot, ref window; windows)
             if (window.open && window.app == App.editor && editors[slot].isEditing(name))
             {
@@ -614,6 +643,8 @@ struct Desktop
 
     private const(char)[] windowTitle(size_t slot)
     {
+        if (windows[slot].app == App.counter)
+            return windowTitleFor(windows[slot].pid);
         return windows[slot].app == App.editor ? editors[slot].title() : appName(windows[slot].app);
     }
 
@@ -706,14 +737,18 @@ struct Desktop
     private void drawCounter(Rect body, uint pid)
     {
         screen.fill(body, paper);
-        ProcessInfo info;
-        if (!infoFor(pid, info))
+        AppWindow app;
+        if (!windowFor(pid, app))
             return;
         screen.text(body.x + 13, body.y + 11, "User process", muted);
         screen.text(body.x + 167, body.y + 11, "PID", muted);
         drawNumber(body.x + 199, body.y + 11, pid, 1);
-        drawNumber(body.x + 13, body.y + 34, info.value, 2);
-        screen.text(body.x + 13, body.y + 71, "Published by Ring 3", muted);
+        const line = app.text[0 .. app.textLength];
+        if (line.length <= 14)
+            screen.text(body.x + 13, body.y + 34, line, ink, 2);
+        else
+            screen.text(body.x + 13, body.y + 39, line, ink);
+        screen.text(body.x + 13, body.y + 71, "Click or Enter sends input", muted);
     }
 
     private void drawNumber(int x, int y, ulong value, int scale)

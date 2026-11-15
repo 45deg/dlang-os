@@ -1,14 +1,16 @@
 """QEMUを起動し、verify_shellでCOM1、verify_desktopで画面とPS/2入力を確認する。
-使い捨てのディスクで永続化と復旧を試し、Ring 3の割り込みとウィンドウ操作も確認する。
+使い捨てのディスクで永続化と復旧を試し、Ring 3でのELF起動、Dランタイム、Phobos、ウィンドウ操作も確認する。
 """
 
 from contextlib import ExitStack, contextmanager
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import re
 import select
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -16,6 +18,7 @@ import time
 
 
 PROMPT = b"dlang> "
+UPLOAD_READY = b"Send hex, then . on its own line. ! cancels.\r\n"
 
 
 class SerialConsole:
@@ -53,7 +56,8 @@ def expect_equal(actual, expected):
 
 def verify_shell(console):
     help_output = console.command(b"help\r")
-    for command in (b"help", b"echo", b"uname", b"mem", b"ls", b"cat", b"write", b"rm", b"clear", b"halt"):
+    for command in (b"help", b"echo", b"uname", b"mem", b"ls", b"cat", b"write",
+                    b"put", b"get", b"rm", b"clear", b"halt"):
         if not re.search(rb"(?:^|\r\n)" + command + rb" +\S", help_output):
             raise AssertionError(f"Help is missing {command!r}: {help_output!r}")
 
@@ -196,6 +200,7 @@ def pixel(data, width, x, y):
 
 # 文字列の期待値は各テストに直接書き、字形の画素は同梱データから組み立てる。
 FONT_DIRECTORY = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+APP_DIRECTORY = Path(__file__).resolve().parents[1] / "build" / "apps"
 FONT_ATLASES = {
     (width, height): (FONT_DIRECTORY / f"ui-{width}x{height}.coverage").read_bytes()
     for width, height in ((8, 14), (16, 24))
@@ -452,7 +457,7 @@ def spawn_process(console, program):
 
 def process_list(console):
     response = console.command(b"ps\r")
-    rows = re.findall(rb"^([0-9]+) ([a-z]+) ([0-9]+) ([0-9]+) ([0-9]+)\r$", response, re.M)
+    rows = re.findall(rb"^([0-9]+) ([A-Za-z0-9_.-]+) ([0-9]+) ([0-9]+) ([0-9]+)\r$", response, re.M)
     totals = re.search(rb"Exited: ([0-9]+)  Faulted: ([0-9]+)", response)
     if totals is None:
         raise AssertionError(f"Missing process totals: {response!r}")
@@ -535,10 +540,27 @@ def verify_windows(console, qmp, image_path):
     qmp.keys("f9", "f9")
     qmp.until_pixel(image_path, 444, 277, accent)
     qmp.until_pixel(image_path, 477, 196, inactive)
-    running, _ = process_list(console)
+    running, totals = process_list(console)
     expect_equal(len(running), 2)
-    if any(task[0] != b"counter" or task[1] == 0 for task in running.values()):
+    if any(task[0] != b"counter.elf" or task[1] == 0 for task in running.values()):
         raise AssertionError(f"Counter windows did not launch independent tasks: {running}")
+    expect_file_bytes(console, b"counter.elf", (APP_DIRECTORY / "counter.elf").read_bytes())
+
+    # GUIからELFへ入力を送り、ELFが返したテキストで止まったことを確認する。
+    qmp.move_to(540, 372)
+    qmp.until_pixel(image_path, 540, 372, cursor)
+    qmp.click()
+    expect_text(qmp, image_path, 456, 334, "Paused", 2, bytes.fromhex("ffffff"))
+    paused, _ = process_list(console)
+    top_pid = max(running)
+    qmp.keys("ret")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        moving, _ = process_list(console)
+        if moving[top_pid][1] > paused[top_pid][1]:
+            break
+    else:
+        raise AssertionError("Counter did not resume after the Enter event")
 
     preview = os.environ.get("DLANG_GUI_PREVIEW")
     if preview:
@@ -547,8 +569,9 @@ def verify_windows(console, qmp, image_path):
 
     qmp.keys("f10")
     qmp.until_pixel(image_path, 477, 196, accent)
-    remaining, _ = process_list(console)
+    remaining, after_close = process_list(console)
     expect_equal(set(remaining), {min(running)})
+    expect_equal(after_close, (totals[0] + 1, totals[1]))
     stop_process(console, min(running))
     qmp.until_pixel(image_path, 201, 78, accent)
     expect_equal(process_list(console)[0], {})
@@ -644,11 +667,194 @@ def verify_new_apps(console, qmp, image_path):
     qmp.until_pixel(image_path, 523, 158, divider)
 
 
+def old_record(sequence, name, contents):
+    # DLANGFS1ではメタデータと478バイトの本文領域が同じセクタにある。
+    raw = struct.pack("<IIH24s478s", sequence, 0, len(contents), name, contents)
+    checksum = 2166136261
+    for byte in raw[:4] + raw[8:]:
+        checksum = ((checksum ^ byte) * 16777619) & 0xffffffff
+    return raw[:4] + struct.pack("<I", checksum) + raw[8:]
+
+
+def old_disk_image():
+    image = bytearray(1024 * 1024)
+    image[:8] = b"DLANGFS1"
+    records = (
+        old_record(1, b"notes.txt", b"first draft\n"),
+        old_record(2, b"notes.txt", b"latest draft\nsecond line\n"),
+        old_record(1, b"removed.txt", b"old content"),
+        old_record(2, b"", b""),
+        old_record(1, b"full-v1.txt", b"x" * 478),
+    )
+    for sector, record in enumerate(records, start=1):
+        image[sector * 512 : (sector + 1) * 512] = record
+    return image
+
+
+def begin_upload(console, name, size):
+    command = b"put " + name + b" " + str(size).encode()
+    console.send(command + b"\r\n")
+    expect_equal(console.read_until(UPLOAD_READY, timeout=15), command + b"\r\n")
+
+
+def put_file(console, name, contents):
+    begin_upload(console, name, len(contents))
+    hex_lines = [contents[offset : offset + 32].hex().encode()
+                 for offset in range(0, len(contents), 32)]
+    console.send(b"\r\n".join([*hex_lines, b".", b""]))
+    expect_equal(console.read_until(PROMPT, timeout=20), b"Saved.\r\n")
+
+
+def expect_file_bytes(console, name, expected):
+    console.send(b"get " + name + b"\r")
+    output = console.read_until(PROMPT, timeout=20).splitlines()
+    expect_equal(output[0:2], [b"get " + name, b"HEX " + str(len(expected)).encode()])
+    received = bytes.fromhex(b"".join(output[2:]).decode("ascii"))
+    if received != expected:
+        raise AssertionError(
+            f"{name!r}: expected {len(expected)} bytes ({sha256(expected).hexdigest()}), "
+            f"got {len(received)} bytes ({sha256(received).hexdigest()})"
+        )
+
+
+def run_hello(console):
+    expect_command(console, b"run hello.elf", b"Hello from a D ELF on disk!\r\n")
+
+
+def verify_disk_elf(console):
+    hello = (APP_DIRECTORY / "hello.elf").read_bytes()
+    before, totals = process_list(console)
+    expect_command(console, b"run missing.elf", b"File not found.\r\n")
+    put_file(console, b"hello.elf", hello[:64])
+    expect_command(console, b"run hello.elf", b"Unsupported or invalid ELF executable.\r\n")
+    expect_equal(process_list(console), (before, totals))
+
+    put_file(console, b"hello.elf", hello)
+    run_hello(console)
+    run_hello(console)  # 前回書いたBSSが再利用時に残らない。
+    expect_equal(process_list(console), (before, (totals[0] + 2, totals[1])))
+
+
+def verify_d_initialization(console):
+    name = b"d_init.elf"
+    put_file(console, name, (APP_DIRECTORY / name.decode("ascii")).read_bytes())
+    before, totals = process_list(console)
+    for _ in range(2):
+        expect_command(console, b"run " + name, b"D shared static constructors ran before main.\r\n")
+    expect_equal(process_list(console), (before, (totals[0] + 2, totals[1])))
+
+
+def verify_d_heap(console):
+    put_file(console, b"d_heap.elf", (APP_DIRECTORY / "d_heap.elf").read_bytes())
+    before, totals = process_list(console)
+    # 同じスロットを再利用しても、BSSの管理情報とヒープの初期値は毎回ゼロから始まる。
+    for _ in range(2):
+        expect_command(console, b"run d_heap.elf",
+                       b"D heap: new and array append passed.\r\nD application heap exhausted.\r\n")
+    expect_equal(process_list(console), (before, (totals[0] + 2, totals[1])))
+
+
+def verify_d_exceptions(console):
+    put_file(console, b"d_exception.elf", (APP_DIRECTORY / "d_exception.elf").read_bytes())
+    before, totals = process_list(console)
+    for _ in range(2):
+        expect_command(console, b"run d_exception.elf",
+                       b"D exceptions: catches and cleanups passed.\r\nUncaught D throwable: unhandled\r\n")
+    expect_equal(process_list(console), (before, (totals[0] + 2, totals[1])))
+
+
+def verify_d_arrays(console):
+    put_file(console, b"d_array.elf", (APP_DIRECTORY / "d_array.elf").read_bytes())
+    before, totals = process_list(console)
+    # 成功例の後、端数の残るキャストでアプリだけがフォルトする。
+    expect_command(console, b"run d_array.elf", b"D arrays: casts and concatenation passed.\r\n")
+    expect_equal(process_list(console), (before, (totals[0], totals[1] + 1)))
+
+
+def verify_phobos(console):
+    vectors = (
+        (b"d_base64.elf", b"Zm9vYmFy\r\nZm8=\r\nZg==\r\n"),
+        (b"d_crc.elf", b"CBF43926\r\n414FA339\r\n"),
+        (b"d_sha.elf", b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\r\n"
+                       b"cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1\r\n"),
+    )
+    before, totals = process_list(console)
+    for name, expected in vectors:
+        put_file(console, name, (APP_DIRECTORY / name.decode("ascii")).read_bytes())
+        expect_command(console, b"run " + name, expected)
+    expect_equal(process_list(console), (before, (totals[0] + len(vectors), totals[1])))
+
+
+def verify_counter_reads_disk(console, qmp, screen):
+    binary = (APP_DIRECTORY / "counter.elf").read_bytes()
+    expect_file_bytes(console, b"counter.elf", binary)
+    put_file(console, b"counter.elf", b"invalid ELF")
+    qmp.keys("f9")
+    expect_text(qmp, screen, 16, 541, "Unsupported or invalid ELF executable.", 1,
+                bytes.fromhex("152843"), bytes.fromhex("ffffff"))
+    expect_equal(process_list(console)[0], {})
+    expect_file_bytes(console, b"counter.elf", b"invalid ELF")
+    put_file(console, b"counter.elf", binary)
+
+
+def verify_migration_and_large_files(qemu_command, root):
+    disk = root / "legacy-data.img"
+    legacy = old_disk_image()
+    # 移行途中に停止して新領域だけ書かれた状態。完了マーカーはまだ空。
+    legacy[34 * 512 : 34 * 512 + 4] = b"part"
+    disk.write_bytes(legacy)
+    source_end = 33 * 512
+    old_text = b"latest draft\nsecond line\n"
+    large_text = (b"0123456789abcdef\n" * 400)[:6145]
+    edited_text = large_text + b"z"
+    binary = bytes(range(256)) * 64
+
+    with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
+        expect_file_bytes(console, b"notes.txt", old_text)
+        expect_file_bytes(console, b"full-v1.txt", b"x" * 478)
+        expect_command(console, b"cat removed.txt", b"File not found.\r\n")
+        put_file(console, b"large.txt", large_text)
+        put_file(console, b"full.bin", binary)
+        expect_command(console, b"cat full.bin", b"Binary file. Use get NAME.\r\n")
+        expect_command(console, b"put oversized.bin 16385", b"Specify a byte count from 0 to 16384.\r\n")
+        begin_upload(console, b"large.txt", len(large_text))
+        console.send(b"4142\r\n.\r\n")
+        expect_equal(console.read_until(PROMPT), b"Invalid hex data or byte count. File was not changed.\r\n")
+        expect_file_bytes(console, b"large.txt", large_text)
+
+        # Filesから6 KiB超の文書を開き、末尾に追記してEditorから保存する。
+        qmp.keys("f5", "down", "ret")
+        screen = root / "large-editor.ppm"
+        qmp.until_pixel(screen, 225, 107, bytes.fromhex("135a56"))
+        qmp.keys("z", "f3")
+        expect_text(qmp, screen, 238, 183, "Saved", 1,
+                    bytes.fromhex("ffffff"), bytes.fromhex("135a56"))
+        expect_file_bytes(console, b"large.txt", edited_text)
+
+    migrated = disk.read_bytes()
+    expect_equal(migrated[:source_end], legacy[:source_end])
+    expect_equal(migrated[source_end : source_end + 8], b"DLANGFS2")
+    with boot(qemu_command, disk) as (console, _):
+        expect_file_bytes(console, b"notes.txt", old_text)
+        expect_file_bytes(console, b"large.txt", edited_text)
+        expect_file_bytes(console, b"full.bin", binary)
+    expect_equal(disk.read_bytes(), migrated)
+
+    # 有効な旧世代が残っていない破損ファイルは、消失扱いで移行しない。
+    corrupt = root / "legacy-corrupt.img"
+    bad_data = old_disk_image()
+    bad_data[5 * 512 + 40] ^= 1
+    corrupt.write_bytes(bad_data)
+    with boot(qemu_command, corrupt, disk_ready=False) as (console, _):
+        expect_command(console, b"write notes.txt ignored", b"Data disk unavailable.\r\n")
+    expect_equal(corrupt.read_bytes(), bad_data)
+
+
 def main(qemu_command):
     with tempfile.TemporaryDirectory(prefix="dlang-") as directory:
         root = Path(directory)
         disk = root / "data.img"
-        disk.write_bytes(b"DLANGFS1" + bytes(1024 * 1024 - 8))
+        disk.write_bytes(b"DLANGFS2" + bytes(1024 * 1024 - 8))
         with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
             verify_shell(console)
             verify_files(console)
@@ -656,6 +862,12 @@ def main(qemu_command):
             verify_desktop(console, qmp, root / "screen.ppm")
             verify_windows(console, qmp, root / "screen.ppm")
             verify_new_apps(console, qmp, root / "screen.ppm")
+            verify_disk_elf(console)
+            verify_d_initialization(console)
+            verify_d_heap(console)
+            verify_d_exceptions(console)
+            verify_d_arrays(console)
+            verify_phobos(console)
 
         # ディスクを差し直し、GUIの保存とシェルの削除が残ることを確認する。
         with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
@@ -663,6 +875,8 @@ def main(qemu_command):
             expect_command(console, b"cat mouse.txt", b"hello\r\ndlang\r\noldxy\r\n")
             expect_command(console, b"cat removed.txt", b"File not found.\r\n")
             expect_command(console, b"cat history.txt", b"second version\r\n")
+            run_hello(console)
+            verify_counter_reads_disk(console, qmp, root / "screen.ppm")
             verify_file_window(qmp, root / "screen.ppm")
             verify_halt(console)
 
@@ -681,8 +895,9 @@ def main(qemu_command):
         with boot(qemu_command, unknown_disk, disk_ready=False) as (console, _):
             expect_command(console, b"write notes.txt hello", b"Data disk unavailable.\r\n")
         expect_equal(unknown_disk.read_bytes(), unknown_data)
+        verify_migration_and_large_files(qemu_command, root)
 
-    print("PASS: QEMU shell, disk recovery, Ring 3 preemption, desktop and apps")
+    print("PASS: QEMU disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, v1 migration, persistence, and disk recovery")
 
 
 if __name__ == "__main__":

@@ -1,11 +1,10 @@
-/* Limineが読み込む上位アドレスのELF。要求、コード、読み取り専用データ、
+/* UEFIローダーが読み込む上位アドレスのELF。コード、読み取り専用データ、
    書き込み可能なデータを別々のロードセグメントに置く。 */
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(kernelMain)
 
 PHDRS
 {
-    requests PT_LOAD FLAGS(6);
     text     PT_LOAD FLAGS(5);
     rodata   PT_LOAD FLAGS(4);
     data     PT_LOAD FLAGS(6);
@@ -14,12 +13,6 @@ PHDRS
 SECTIONS
 {
     . = 0xffffffff80000000;
-
-    .limine_requests : {
-        KEEP(*(.limine_requests_start))
-        KEEP(*(.limine_requests))
-        KEEP(*(.limine_requests_end))
-    } :requests
 
     .text ALIGN(0x1000) : { *(.text .text.*) } :text
     .user_app ALIGN(0x1000) : {

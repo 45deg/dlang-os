@@ -3,7 +3,7 @@ module editor;
 
 import desktop_theme : accent, accentLight, button, centeredText, divider, ink, labelWithin, muted, paper,
     toolbar, warning;
-import filesystem : FsResult, FileVersion, errorText, fileLimit, isMounted, maxNameBytes, maxTextBytes,
+import filesystem : FsResult, FileVersion, errorText, fileLimit, isMounted, isText, maxNameBytes, maxFileBytes,
     open, save, validFilename;
 import font : largeTextHeight, largeTextWidth;
 import graphics : Rect, Screen, maximum, minimum;
@@ -17,7 +17,7 @@ enum EditorClick { none, select, scroll, close }
 
 struct EditorClipboard
 {
-    private char[maxTextBytes] text = void;
+    private char[maxFileBytes] text = void;
     private size_t length;
 
     bool hasText() const nothrow @nogc { return length != 0; }
@@ -33,7 +33,7 @@ struct Editor
 
     private char[maxNameBytes] documentName = void;
     private size_t documentNameLength;
-    private char[maxTextBytes] document = void;
+    private char[maxFileBytes] document = void;
     private size_t length;
     private size_t caret;
     private size_t anchor;
@@ -341,7 +341,8 @@ struct Editor
         const(char)[] contents;
         FileVersion stored;
         if (fileVersion.slot != fileLimit
-            && open(documentName[0 .. documentNameLength], contents, stored) == FsResult.ok)
+            && open(documentName[0 .. documentNameLength], contents, stored) == FsResult.ok
+            && isText(contents))
         {
             foreach (i, char c; contents)
                 document[i] = c;

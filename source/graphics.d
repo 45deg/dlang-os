@@ -1,9 +1,9 @@
-/// 矩形とASCII文字をRAMに合成し、presentで指定範囲をLimineの画面へ転送する。
+/// 矩形とASCII文字をRAMに合成し、presentで指定範囲をUEFIから引き継いだフレームバッファへ転送する。
 module graphics;
 
 import font : glyphFor, largeTextWidth, textWidth;
 import ldc.llvmasm : __asm;
-import limine : bootFramebuffer, reserveBootBuffer;
+import boot_info : bootFramebuffer, bootBackBuffer;
 
 struct Rect
 {
@@ -46,22 +46,14 @@ struct Screen
 
     bool init()
     {
-        const frame = bootFramebuffer();
-        if (frame is null || frame.address is null || frame.bitsPerPixel != 32
-            || frame.memoryModel != 1 || frame.width < 640 || frame.height < 480
-            || frame.width > 8192 || frame.height > 8192
-            || frame.pitchBytes < frame.width * 4 || frame.pitchBytes % 4 != 0
-            || frame.redSize != 8 || frame.greenSize != 8 || frame.blueSize != 8
-            || frame.redShift > 24 || frame.greenShift > 24 || frame.blueShift > 24)
+        auto frame = bootFramebuffer();
+        if (frame.address is null)
             return false;
-        backBuffer = cast(uint*) reserveBootBuffer(frame.width * frame.height * uint.sizeof);
-        if (backBuffer is null)
-            return false;
-
-        framebuffer = cast(uint*) frame.address;
+        backBuffer = bootBackBuffer();
+        framebuffer = frame.address;
         width = cast(int) frame.width;
         height = cast(int) frame.height;
-        framebufferStride = cast(size_t) (frame.pitchBytes / 4);
+        framebufferStride = frame.pitchBytes / uint.sizeof;
         redShift = frame.redShift;
         greenShift = frame.greenShift;
         blueShift = frame.blueShift;

@@ -1,14 +1,28 @@
-/// 固定スロットのRing 3プロセスを管理し、runNextで1つずつラウンドロビン実行する。
+/// spawnElfでELFとヒープを配置し、runNextでRing 3プロセスをラウンドロビン実行する。
 module process;
 
-import address_space : AddressSpace, initPaging, initUserSpace, resetUserStack,
-    userCodeAddress, userStackTop, __user_app_start;
+import address_space : AddressSpace, initPaging, initUserSpace, resetUserSpace, mapBuiltin, mapUserHeap, copyFromUser,
+    userCodeAddress, userImageEnd, userStackBase, userStackTop, __user_app_start;
 import apic_timer : initTimer, arm, cancel;
 import cpu : readCr3;
 import privilege : UserFrame, enterUser, initPrivilege, syscallVector, timerVector, userCode, userData;
-import user_program : Call, Program, userMain;
+import elf : loadElf;
+import filesystem : maxNameBytes;
+import serial : writeByte, writeText;
+import user_abi : Call, WindowEvent, callError, textLimit, titleLimit, writeLimit;
+import user_program : Program, programName, userMain;
 
 enum processLimit = 8;
+enum ElfStart { ok, unavailable, invalid }
+private enum ulong userStatusFlags = 0xcd5; // OF, DF, SF, ZF, AF, PF, CF
+private enum ulong userInterruptsEnabled = 0x202;
+
+struct AppWindow
+{
+    char[titleLimit] title = void;
+    char[textLimit] text = void;
+    size_t titleLength, textLength;
+}
 
 struct ProcessInfo
 {
@@ -17,12 +31,18 @@ struct ProcessInfo
     ulong value;
     ulong slices;
     ulong preemptions;
+    char[maxNameBytes] filename = void;
+    size_t filenameLength;
 }
 
 private struct Process
 {
     ProcessInfo info;
     UserFrame frame;
+    AppWindow window;
+    WindowEvent event;
+    bool windowPending;
+    uint closeBudget;
 }
 
 private __gshared Process[processLimit] processes;
@@ -37,8 +57,7 @@ nothrow @nogc:
 
 bool initProcesses()
 {
-    if (!initPaging())
-        return false;
+    initPaging();
     initPrivilege();
     if (!initTimer())
         return false;
@@ -50,44 +69,76 @@ bool initProcesses()
     return true;
 }
 
-bool canSpawn()
-{
-    if (!available)
-        return false;
-    foreach (ref task; processes)
-        if (task.info.pid == 0)
-            return true;
-    return false;
-}
-
 uint spawn(Program program)
 {
-    if (!available)
+    const slot = freeSlot();
+    if (slot == processLimit)
         return 0;
-    foreach (slot, ref task; processes)
+
+    resetUserSpace(spaces[slot]);
+    if (!mapBuiltin(spaces[slot]))
+        return 0;
+
+    const entry = userCodeAddress + (cast(ulong) &userMain - cast(ulong) &__user_app_start);
+    auto task = activate(slot, program, entry);
+    task.frame.rdi = cast(ulong) program;
+    task.frame.rsi = task.info.pid;
+    return task.info.pid;
+}
+
+ElfStart spawnElf(scope const(char)[] name, scope const(char)[] image, out uint pid)
+{
+    const slot = freeSlot();
+    if (slot == processLimit)
+        return ElfStart.unavailable;
+    resetUserSpace(spaces[slot]);
+    ulong entry;
+    if (!loadElf(spaces[slot], image, entry))
+        return ElfStart.invalid;
+    if (!mapUserHeap(spaces[slot]))
+        return ElfStart.unavailable;
+
+    auto task = activate(slot, Program.elf, entry);
+    foreach (i, char c; name)
+        task.info.filename[i] = c;
+    task.info.filenameLength = name.length;
+    pid = task.info.pid;
+    return ElfStart.ok;
+}
+
+const(char)[] processName(return scope ref const ProcessInfo info)
+{
+    return info.program == Program.elf
+        ? info.filename[0 .. info.filenameLength]
+        : programName(info.program);
+}
+
+private size_t freeSlot()
+{
+    if (available)
+        foreach (slot, ref task; processes)
+            if (task.info.pid == 0)
+                return slot;
+    return processLimit;
+}
+
+private Process* activate(size_t slot, Program program, ulong entry)
+{
+    auto task = &processes[slot];
+    *task = Process.init;
+    do
     {
-        if (task.info.pid != 0)
-            continue;
-
-        resetUserStack(spaces[slot]);
-        task = Process.init;
-        do
-        {
-            task.info.pid = nextPid++;
-        }
-        while (task.info.pid == 0 || pidExistsBeforeAssignment(slot, task.info.pid));
-
-        task.info.program = program;
-        task.frame.rdi = cast(ulong) program;
-        task.frame.rsi = task.info.pid;
-        task.frame.rip = userCodeAddress + (cast(ulong) &userMain - cast(ulong) &__user_app_start);
-        task.frame.rsp = userStackTop - 8; // System V ABIの関数入口に揃える
-        task.frame.cs = userCode;
-        task.frame.ss = userData;
-        task.frame.flags = 0x202; // IF=1。I/O特権はRing 0のまま
-        return task.info.pid;
+        task.info.pid = nextPid++;
     }
-    return 0;
+    while (task.info.pid == 0 || pidExistsBeforeAssignment(slot, task.info.pid));
+
+    task.info.program = program;
+    task.frame.rip = entry;
+    task.frame.rsp = userStackTop - 8;
+    task.frame.cs = userCode;
+    task.frame.ss = userData;
+    task.frame.flags = userInterruptsEnabled;
+    return task;
 }
 
 private bool pidExistsBeforeAssignment(size_t assignedSlot, uint pid)
@@ -98,30 +149,67 @@ private bool pidExistsBeforeAssignment(size_t assignedSlot, uint pid)
     return false;
 }
 
+private Process* find(uint pid)
+{
+    if (pid != 0)
+        foreach (ref task; processes)
+            if (task.info.pid == pid)
+                return &task;
+    return null;
+}
+
 bool stop(uint pid)
 {
-    if (pid == 0)
+    auto task = find(pid);
+    if (task is null)
         return false;
-    foreach (ref task; processes)
-        if (task.info.pid == pid)
-        {
-            task.info.pid = 0;
-            return true;
-        }
-    return false;
+    task.info.pid = 0;
+    return true;
 }
 
 bool infoFor(uint pid, out ProcessInfo info)
 {
-    if (pid == 0)
+    const task = find(pid);
+    if (task is null)
         return false;
-    foreach (ref task; processes)
-        if (task.info.pid == pid)
-        {
-            info = task.info;
-            return true;
-        }
-    return false;
+    info = task.info;
+    return true;
+}
+
+uint takeWindowRequest(size_t slot)
+{
+    auto task = &processes[slot];
+    if (task.info.pid == 0 || !task.windowPending)
+        return 0;
+    task.windowPending = false;
+    return task.info.pid;
+}
+
+bool windowFor(uint pid, out AppWindow window)
+{
+    const task = find(pid);
+    if (task is null || task.window.titleLength == 0)
+        return false;
+    window = task.window;
+    return true;
+}
+
+const(char)[] windowTitleFor(uint pid)
+{
+    const task = find(pid);
+    return task is null ? null : task.window.title[0 .. task.window.titleLength];
+}
+
+void windowInput(uint pid, WindowEvent event)
+{
+    auto task = find(pid);
+    if (task is null || task.window.titleLength == 0 || task.closeBudget != 0)
+        return;
+
+    task.event = event;
+    // 閉じる通知を無視するアプリが残り続けないよう、処理できる実行回数を区切る。
+    if (event == WindowEvent.close)
+        task.closeBudget = 24;
 }
 
 ProcessInfo infoAt(size_t slot)
@@ -150,20 +238,37 @@ void runNext()
         enterUser(&task.frame, spaces[slot].cr3, kernelCr3);
         const timerFired = task.frame.vector == timerVector;
         cancel(timerFired);
-        if (timerFired)
+        if (!validResume(task.frame))
+        {
+            ++faultedCount;
+            task.info.pid = 0;
+        }
+        else if (timerFired)
             ++task.info.preemptions;
         else if (task.frame.vector == syscallVector)
-            handleCall(*task);
+            handleCall(*task, spaces[slot]);
         else
         {
             ++faultedCount;
             task.info.pid = 0;
         }
+        if (task.info.pid != 0 && task.closeBudget != 0 && --task.closeBudget == 0)
+            task.info.pid = 0;
         return;
     }
 }
 
-private void handleCall(ref Process task)
+private bool validResume(ref UserFrame frame)
+{
+    // ユーザーが変更できる状態を、次のIRETへ渡す前にABIの範囲へ戻す。
+    frame.flags = (frame.flags & userStatusFlags) | userInterruptsEnabled;
+    frame.cs = userCode;
+    frame.ss = userData;
+    return frame.rip >= userCodeAddress && frame.rip < userImageEnd
+        && frame.rsp >= userStackBase && frame.rsp <= userStackTop;
+}
+
+private void handleCall(ref Process task, ref const AddressSpace space)
 {
     switch (cast(Call) task.frame.rax)
     {
@@ -178,8 +283,76 @@ private void handleCall(ref Process task)
             ++exitedCount;
             task.info.pid = 0;
             break;
+        case Call.write:
+            task.frame.rax = userWrite(space, task.frame.rdi, task.frame.rsi);
+            break;
+        case Call.windowOpen:
+            task.frame.rax = openWindow(task, space);
+            break;
+        case Call.windowText:
+            task.frame.rax = updateWindow(task, space);
+            break;
+        case Call.windowEvent:
+            task.frame.rax = cast(ulong) task.event;
+            task.event = WindowEvent.none;
+            break;
         default:
-            task.frame.rax = ulong.max;
+            task.frame.rax = callError;
             break;
     }
+}
+
+private ulong userWrite(ref const AddressSpace space, ulong address, ulong length)
+{
+    char[writeLimit] buffer = void;
+    if (length > buffer.length || !readText(space, address, buffer[0 .. length], true))
+        return callError;
+
+    foreach (char c; buffer[0 .. length])
+    {
+        if (c == '\n')
+            writeText("\r\n");
+        else
+            writeByte(c);
+    }
+    return length;
+}
+
+private ulong openWindow(ref Process task, ref const AddressSpace space)
+{
+    const length = task.frame.rsi;
+    char[titleLimit] title = void;
+    if (task.window.titleLength || length == 0 || length > title.length
+        || !readText(space, task.frame.rdi, title[0 .. length], false))
+        return callError;
+
+    foreach (i; 0 .. length)
+        task.window.title[i] = title[i];
+    task.window.titleLength = length;
+    task.windowPending = true;
+    return 0;
+}
+
+private ulong updateWindow(ref Process task, ref const AddressSpace space)
+{
+    const length = task.frame.rsi;
+    char[textLimit] line = void;
+    if (task.window.titleLength == 0 || length > line.length
+        || !readText(space, task.frame.rdi, line[0 .. length], false))
+        return callError;
+
+    foreach (i; 0 .. length)
+        task.window.text[i] = line[i];
+    task.window.textLength = length;
+    return 0;
+}
+
+private bool readText(ref const AddressSpace space, ulong address, scope char[] text, bool allowNewline)
+{
+    if (text.length && !copyFromUser(space, address, text))
+        return false;
+    foreach (char c; text)
+        if ((c < ' ' || c > '~') && !(allowNewline && c == '\n'))
+            return false;
+    return true;
 }

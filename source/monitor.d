@@ -1,13 +1,12 @@
-/// Limineのメモリ情報とスケジューラの統計を、Monitorウィンドウの表に描く。
+/// 起動時の空きメモリとスケジューラの統計を、Monitorウィンドウの表に描く。
 module monitor;
 
 import desktop_theme : accent, accentLight, divider, ink, labelWithin, muted, paper, toolbar;
 import font : textHeight, textWidth;
 import graphics : Rect, Screen;
-import limine : usableMemoryKiB;
+import boot_info : usableMemoryKiB;
 import numbers : decimalText;
-import process : exitedProcesses, faultedProcesses, infoAt, processLimit;
-import user_program : programName;
+import process : exitedProcesses, faultedProcesses, infoAt, processLimit, processName;
 
 void drawMonitor(ref Screen screen, Rect body) nothrow @nogc
 {
@@ -22,14 +21,8 @@ void drawMonitor(ref Screen screen, Rect body) nothrow @nogc
     const x = body.x + 14;
     screen.text(x, body.y + 13, "Usable RAM at boot", muted);
     screen.text(x + 170, body.y + 13, "User processes", muted);
-    ulong memoryKiB;
-    if (usableMemoryKiB(memoryKiB))
-    {
-        drawMetric(screen, x, body.y + 33, memoryKiB / 1024, 2);
-        screen.text(x + 65, body.y + 40, "MiB", muted);
-    }
-    else
-        screen.text(x, body.y + 41, "Unavailable", muted);
+    drawMetric(screen, x, body.y + 33, usableMemoryKiB() / 1024, 2);
+    screen.text(x + 65, body.y + 40, "MiB", muted);
     drawMetric(screen, x + 170, body.y + 33, running, 2);
     screen.text(x + 193, body.y + 40, "/", muted);
     drawMetric(screen, x + 207, body.y + 40, processLimit, 1);
@@ -56,7 +49,7 @@ void drawMonitor(ref Screen screen, Rect body) nothrow @nogc
         screen.fill(Rect(body.x + 8, y, body.width - 16, 18), row % 2 ? toolbar : accentLight);
         const textY = y + (18 - textHeight) / 2;
         tableNumber(screen, x, textY, 9, task.pid);
-        screen.text(x + 80, textY, programName(task.program), ink);
+        labelWithin(screen, Rect(x + 80, textY, 88, textHeight), processName(task), ink);
         tableNumber(screen, x + 174, textY, 11, task.slices);
         tableNumber(screen, x + 274, textY, 13, task.preemptions);
         ++row;
