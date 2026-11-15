@@ -2,7 +2,7 @@
 module d_heap;
 
 import core.volatile : volatileLoad, volatileStore;
-import user_abi : Call, userHeapBase, userHeapBytes;
+import user_abi : Call, userHeapBase, userHeapLimitBytes;
 import user_api : send;
 
 private align(32) struct Record
@@ -37,7 +37,7 @@ private uint[] growArray() pure @safe
 private bool inHeap(const(void)* ptr)
 {
     const address = cast(size_t) ptr;
-    return address >= userHeapBase && address - userHeapBase < userHeapBytes;
+    return address >= userHeapBase && address - userHeapBase < userHeapLimitBytes;
 }
 
 void main()
@@ -80,13 +80,23 @@ void main()
     foreach (i, value; growing)
         assert(value == i);
 
+    // 旧64 KiB上限を越え、ページテーブルの2 MiB境界も越えて拡張する。
+    auto large = newBytes(3 * 1024 * 1024);
+    foreach (i; 0 .. large.length / 4096)
+    {
+        assert(volatileLoad(&large[i * 4096]) == 0);
+        volatileStore(&large[i * 4096], cast(ubyte) i);
+    }
+    foreach (i; 0 .. large.length / 4096)
+        assert(volatileLoad(&large[i * 4096]) == cast(ubyte) i);
+
     string message;
     message ~= "D heap: new and array append passed.\n";
     assert(inHeap(message.ptr));
     assert(send(Call.write, message) == message.length);
 
     // 使用済みの領域があるので、ヒープ全体と同じ長さの配列は確保できない。
-    auto tooLarge = newBytes(userHeapBytes);
+    auto tooLarge = newBytes(userHeapLimitBytes);
     if (tooLarge.length != 0)
         send(Call.write, "Unexpected successful allocation.\n");
 }

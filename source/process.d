@@ -1,7 +1,7 @@
 /// spawnElfでELFとヒープを配置し、runNextでRing 3プロセスをラウンドロビン実行する。
 module process;
 
-import address_space : AddressSpace, initPaging, initUserSpace, releaseUserSpace, mapBuiltin, mapUserHeap, copyFromUser,
+import address_space : AddressSpace, initPaging, initUserSpace, releaseUserSpace, mapBuiltin, mapUserHeap, resizeHeap, copyFromUser,
     userCodeAddress, userImageEnd, userStackBase, userStackTop, __user_app_start;
 import apic_timer : initTimer, arm, cancel;
 import cpu : readCr3;
@@ -265,10 +265,13 @@ private bool validResume(ref UserFrame frame)
         && frame.rsp >= userStackBase && frame.rsp <= userStackTop;
 }
 
-private void handleCall(ref Process task, ref const AddressSpace space)
+private void handleCall(ref Process task, ref AddressSpace space)
 {
     switch (cast(Call) task.frame.rax)
     {
+        case Call.heapResize:
+            task.frame.rax = resizeHeap(space, task.frame.rdi);
+            break;
         case Call.yield:
             task.frame.rax = 0;
             break;

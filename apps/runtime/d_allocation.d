@@ -3,10 +3,12 @@ module d_allocation;
 
 import core.stdc.string : memcpy;
 import core.internal.traits : hasElaborateCopyConstructor;
-import user_abi : Call, userHeapBase, userHeapBytes;
-import user_api : exitApp, send;
+import user_abi : Call, userHeapBase, userHeapLimitBytes;
+import user_api : call, exitApp, send;
+import user_abi : userHeapInitialBytes, callError;
 
 private __gshared size_t heapUsed;
+private __gshared size_t heapCommitted = userHeapInitialBytes;
 private enum classAlignment = 16; // x86-64でLDCがヒープ上のクラスに使うアライメント。
 
 private struct ArrayBlock
@@ -31,15 +33,22 @@ private noreturn outOfMemory()
 
 private void* tryAllocate(size_t bytes, size_t alignment)
 {
-    if (bytes == 0 || alignment == 0 || alignment > userHeapBytes)
+    if (bytes == 0 || alignment == 0 || alignment > userHeapLimitBytes)
         return null;
 
     const address = (userHeapBase + heapUsed + alignment - 1) & ~(alignment - 1);
     const offset = address - userHeapBase;
-    if (offset >= userHeapBytes || bytes > userHeapBytes - offset)
+    if (offset >= userHeapLimitBytes || bytes > userHeapLimitBytes - offset)
         return null;
 
-    heapUsed = offset + bytes;
+    const required = offset + bytes;
+    if (required > heapCommitted)
+    {
+        const committed = call(Call.heapResize, required);
+        if (committed == callError) return null;
+        heapCommitted = committed;
+    }
+    heapUsed = required;
     return cast(void*) address;
 }
 
@@ -52,7 +61,7 @@ private void* allocate(size_t bytes, size_t alignment)
 
 private size_t arrayBytes(size_t count, size_t itemSize) pure
 {
-    if (itemSize == 0 || count > userHeapBytes / itemSize)
+    if (itemSize == 0 || count > userHeapLimitBytes / itemSize)
         (cast(noreturn function() pure) &outOfMemory)();
     return count * itemSize;
 }
@@ -83,7 +92,7 @@ private void* appendSpace(void* data, size_t used, size_t required, size_t align
         }
     }
 
-    const capacity = required <= userHeapBytes / 2 ? required * 2 : required;
+    const capacity = required <= userHeapLimitBytes / 2 ? required * 2 : required;
     auto result = allocateArray(required, capacity, alignment);
     if (used != 0)
         memcpy(result, data, used);
@@ -221,7 +230,7 @@ Result _d_arraycatnTX(Result : T[], T, Parts...)(auto ref Parts parts) pure @tru
     }
 
     // 先に合計を調べ、入力の余剰容量に関わらず結果用に一度だけ領域を確保する。
-    enum maxLength = userHeapBytes / T.sizeof;
+    enum maxLength = userHeapLimitBytes / T.sizeof;
     size_t length;
     foreach (ref part; parts)
     {

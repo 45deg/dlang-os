@@ -4,20 +4,16 @@ module address_space;
 import boot_info : directMapOffset;
 import physical_memory : allocatePage, freePage;
 import cpu : readCr3, writeCr3;
-import user_abi : userHeapBase, userHeapBytes;
+import user_abi : userHeapBase, userHeapInitialBytes, userHeapLimitBytes, callError;
 
 enum ulong userCodeAddress = 0x0040_0000;
 enum uint pageBytes = 4096;
-enum uint userImagePages = 8;
-enum ulong userImageEnd = userCodeAddress + userImagePages * pageBytes;
-enum ulong userStackBase = 0x0041_0000;
-enum ulong userStackTop = userStackBase + pageBytes;
-private enum stackIndex = (userStackBase - userCodeAddress) / pageBytes;
-private enum heapIndex = (userHeapBase - userCodeAddress) / pageBytes;
-private enum heapPages = userHeapBytes / pageBytes;
-private enum userHeapEnd = userHeapBase + userHeapBytes;
-static assert(userHeapBase >= userStackTop + pageBytes && userHeapBase % pageBytes == 0);
-static assert(userHeapBytes % pageBytes == 0 && heapIndex + heapPages <= 512);
+// ELF、ヒープ、ガード付きスタックを別々の仮想領域に置く。物理ページは必要時に確保する。
+enum ulong userImageEnd = userHeapBase;
+enum ulong userStackTop = 0x8000_0000;
+enum ulong userStackBase = userStackTop - 64 * 1024;
+private enum ulong userAddressEnd = userStackTop;
+static assert(userHeapBase + userHeapLimitBytes < userStackBase);
 private enum ulong apicAddress = 0xffff_c000_0000_0000;
 private enum ulong physicalMask = 0x000f_ffff_ffff_f000;
 private enum ulong owned = 1 << 9; // OS用ビット。共有コードは回収しない。
@@ -37,7 +33,8 @@ static assert(Page.sizeof == pageBytes && Page.alignof == pageBytes);
 
 struct AddressSpace
 {
-    private Page* root, pdpt, directory, table;
+    private Page* root;
+    private ulong heapBytes;
     ulong cr3;
 }
 
@@ -63,62 +60,149 @@ bool initUserSpace(ref AddressSpace space)
     if (root == 0) return false;
     space.root = directPage(root);
     space.cr3 = root;
-    const pdpt = allocatePage();
-    if (pdpt == 0) return false;
-    space.pdpt = directPage(pdpt);
-    const directory = allocatePage();
-    if (directory == 0) return false;
-    space.directory = directPage(directory);
-    const table = allocatePage();
-    if (table == 0) return false;
-    space.table = directPage(table);
-    const stack = allocatePage();
-    if (stack == 0) return false;
-    space.table.words[stackIndex] = stack | owned | present | user | writable | noExecute;
-
-    // 上位側は共有し、プロセスからアクセスできるページは下位側にだけ割り当てる。
     foreach (i; 256 .. 512)
         space.root.words[i] = kernelRoot.words[i] & ~user;
-    const walkFlags = present | writable | user;
-    space.root.words[0] = pdpt | walkFlags;
-    space.pdpt.words[0] = directory | walkFlags;
-    space.directory.words[2] = table | walkFlags;
-    space.cr3 = root;
+    for (ulong address = userStackBase; address < userStackTop; address += pageBytes)
+        if (!mapZeroPage(space, address, writable | noExecute))
+            return false;
     return true;
 }
 
-/// カーネルのCR3に戻ってから、部分的な初期化も含めて所有ページを回収する。
+/// カーネルのCR3に戻ってから、部分的な初期化も含めて下位側の所有ページを回収する。
 void releaseUserSpace(ref AddressSpace space)
 {
-    if (space.table !is null)
-        foreach (entry; space.table.words)
-            if (entry & owned)
-                freePage(entry & physicalMask);
-    foreach (page; [space.table, space.directory, space.pdpt, space.root])
-        if (page !is null)
-            freePage(cast(ulong) page - directMapOffset);
+    if (space.root !is null)
+    {
+        foreach (entry; space.root.words[0 .. 256])
+            if (entry & present)
+                releaseTree(entry & physicalMask, 3);
+        freePage(space.cr3);
+    }
     space = AddressSpace.init;
+}
+
+private void releaseTree(ulong physical, uint levels)
+{
+    foreach (entry; directPage(physical).words)
+    {
+        if (!(entry & present)) continue;
+        if (levels > 1)
+            releaseTree(entry & physicalMask, levels - 1);
+        else if (entry & owned)
+            freePage(entry & physicalMask);
+    }
+    freePage(physical);
+}
+
+/// ページテーブルも必要な枝だけ作る。失敗時の空の枝はpruneTablesまたは終了時に回収する。
+private ulong* leafFor(ref AddressSpace space, ulong address, bool create)
+{
+    auto table = space.root;
+    foreach (shift; [39, 30, 21])
+    {
+        auto entry = &table.words[(address >> shift) & 511];
+        if (!(*entry & present))
+        {
+            if (!create) return null;
+            const physical = allocatePage();
+            if (physical == 0) return null;
+            *entry = physical | present | writable | user;
+        }
+        table = directPage(*entry & physicalMask);
+    }
+    return &table.words[(address >> 12) & 511];
+}
+
+private ulong entryAt(ref const AddressSpace space, ulong address)
+{
+    const(Page)* table = space.root;
+    foreach (shift; [39, 30, 21])
+    {
+        const entry = table.words[(address >> shift) & 511];
+        if (!(entry & present)) return 0;
+        table = directPage(entry & physicalMask);
+    }
+    return table.words[(address >> 12) & 511];
+}
+
+private bool mapZeroPage(ref AddressSpace space, ulong address, ulong flags)
+{
+    auto leaf = leafFor(space, address, true);
+    if (leaf is null || *leaf != 0) return false;
+    const physical = allocatePage();
+    if (physical == 0) return false;
+    *leaf = physical | owned | present | user | flags;
+    return true;
 }
 
 bool mapBuiltin(ref AddressSpace space)
 {
     const code = physicalAddress(cast(ulong) &__user_app_start);
-    if (code == 0)
-        return false;
-    space.table.words[0] = code | present | user;
+    auto leaf = leafFor(space, userCodeAddress, true);
+    if (code == 0 || leaf is null || *leaf != 0) return false;
+    *leaf = code | present | user;
     return true;
 }
 
 bool mapUserHeap(ref AddressSpace space)
 {
-    foreach (i; 0 .. heapPages)
+    return resizeHeap(space, userHeapInitialBytes) != callError;
+}
+
+/// 要求サイズをページ境界へ丸めて返す。拡張失敗時は元のサイズと内容を維持する。
+ulong resizeHeap(ref AddressSpace space, ulong requestedBytes)
+{
+    if (requestedBytes > userHeapLimitBytes) return callError;
+    const bytes = (requestedBytes + pageBytes - 1) & ~(pageBytes - 1UL);
+    if (bytes > space.heapBytes)
     {
-        const physical = allocatePage();
-        if (physical == 0)
-            return false;
-        space.table.words[heapIndex + i] = physical | owned | present | writable | user | noExecute;
+        ulong offset = space.heapBytes;
+        for (; offset < bytes; offset += pageBytes)
+            if (!mapZeroPage(space, userHeapBase + offset, writable | noExecute))
+            {
+                unmapHeap(space, space.heapBytes, offset);
+                pruneTables(space.root, 4);
+                return callError;
+            }
     }
-    return true;
+    else if (bytes < space.heapBytes)
+    {
+        unmapHeap(space, bytes, space.heapBytes);
+        pruneTables(space.root, 4);
+    }
+    space.heapBytes = bytes;
+    return bytes;
+}
+
+private void unmapHeap(ref AddressSpace space, ulong start, ulong end)
+{
+    for (auto offset = start; offset < end; offset += pageBytes)
+    {
+        auto leaf = leafFor(space, userHeapBase + offset, false);
+        if (leaf !is null && (*leaf & owned))
+        {
+            freePage(*leaf & physicalMask);
+            *leaf = 0;
+        }
+    }
+}
+
+// 空になったテーブルを回収する。ルートの上位半分はカーネル共有なので触らない。
+private bool pruneTables(Page* table, uint levels)
+{
+    bool empty = true;
+    const count = levels == 4 ? 256 : 512;
+    foreach (ref entry; table.words[0 .. count])
+    {
+        if (!(entry & present)) continue;
+        if (levels > 1 && pruneTables(directPage(entry & physicalMask), levels - 1))
+        {
+            freePage(entry & physicalMask);
+            entry = 0;
+        }
+        else empty = false;
+    }
+    return empty;
 }
 
 bool mapImage(ref AddressSpace space, ulong address, ulong memorySize,
@@ -129,13 +213,12 @@ bool mapImage(ref AddressSpace space, ulong address, ulong memorySize,
         || (write && execute))
         return false;
 
-    const first = (address - userCodeAddress) / pageBytes;
     const count = (memorySize + pageBytes - 1) / pageBytes;
     const flags = present | user | (write ? writable : 0) | (execute ? 0 : noExecute);
     foreach (i; 0 .. count)
     {
-        const index = first + i;
-        if (space.table.words[index] != 0)
+        auto leaf = leafFor(space, address + i * pageBytes, true);
+        if (leaf is null || *leaf != 0)
             return false;
         const physical = allocatePage();
         if (physical == 0)
@@ -145,7 +228,7 @@ bool mapImage(ref AddressSpace space, ulong address, ulong memorySize,
         if (offset < data.length)
             foreach (j; offset .. (data.length < offset + pageBytes ? data.length : offset + pageBytes))
                 bytes[j - offset] = data[j];
-        space.table.words[index] = physical | owned | flags;
+        *leaf = physical | owned | flags;
     }
     return true;
 }
@@ -153,13 +236,12 @@ bool mapImage(ref AddressSpace space, ulong address, ulong memorySize,
 /// カーネルのCR3へ復帰後に呼ぶ。ユーザーが示した仮想アドレスを直接参照しない。
 bool copyFromUser(ref const AddressSpace space, ulong address, scope char[] output)
 {
-    if (address < userCodeAddress || address >= userHeapEnd || output.length > userHeapEnd - address)
+    if (address < userCodeAddress || address >= userAddressEnd || output.length > userAddressEnd - address)
         return false;
     size_t copied;
     while (copied < output.length)
     {
-        const index = (address - userCodeAddress) / pageBytes;
-        const entry = space.table.words[index];
+        const entry = entryAt(space, address);
         if ((entry & (present | user)) != (present | user))
             return false;
         const bytes = cast(const(char)*) directPage(entry & physicalMask);
@@ -176,14 +258,13 @@ bool copyFromUser(ref const AddressSpace space, ulong address, scope char[] outp
 /// 入力イベントやファイルを、ユーザーが書き込めるページにだけ返す。
 bool copyToUser(ref const AddressSpace space, ulong address, scope const(char)[] input)
 {
-    if (address < userCodeAddress || address >= userHeapEnd || input.length > userHeapEnd - address)
+    if (address < userCodeAddress || address >= userAddressEnd || input.length > userAddressEnd - address)
         return false;
     const flags = present | user | writable;
     size_t copied;
     while (copied < input.length)
     {
-        const index = (address - userCodeAddress) / pageBytes;
-        const entry = space.table.words[index];
+        const entry = entryAt(space, address);
         if ((entry & flags) != flags)
             return false;
         auto bytes = cast(char*) directPage(entry & physicalMask);

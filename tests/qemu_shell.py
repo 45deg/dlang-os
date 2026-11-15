@@ -786,6 +786,18 @@ def verify_disk_elf(console):
     expect_equal(free_memory(console), baseline_memory)
 
 
+def verify_virtual_memory(console):
+    baseline = free_memory(console)
+    before, totals = process_list(console)
+    put_file(console, b"vm.elf", (APP_DIRECTORY / "vm.elf").read_bytes())
+    for _ in range(2):
+        console.send(b"run vm.elf\r")
+        expect_equal(console.read_until(PROMPT, timeout=30),
+                     b"run vm.elf\r\nVM: large BSS, stack, heap growth, shrink and OOM rollback passed.\r\n")
+        expect_equal(free_memory(console), baseline)
+    expect_equal(process_list(console), (before, (totals[0] + 2, totals[1])))
+
+
 def verify_d_initialization(console):
     name = b"d_init.elf"
     put_file(console, name, (APP_DIRECTORY / name.decode("ascii")).read_bytes())
@@ -959,6 +971,7 @@ def main(qemu_command):
         experiments.write_bytes(b"DLANGFS2" + bytes(1024 * 1024 - 8))
         with boot(qemu_command, experiments) as (console, _):
             baseline_memory = free_memory(console)
+            verify_virtual_memory(console)
             verify_d_initialization(console)
             verify_d_heap(console)
             verify_d_exceptions(console)

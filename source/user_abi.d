@@ -2,9 +2,11 @@
 module user_abi;
 
 enum Call : ulong { yield, publish, exit, write, reservedWindowOpen, reservedWindowText, reservedWindowEvent,
-    guiPoll, guiPresent, guiDirectory, guiReadFile, guiSaveFile, guiOpenDocument, guiMonitor, guiCreate }
+    guiPoll, guiPresent, guiDirectory, guiReadFile, guiSaveFile, guiOpenDocument, guiMonitor, guiCreate, heapResize }
 enum ulong callError = ulong.max;
 enum uint titleLimit = 24;
 enum uint writeLimit = 128;
-enum size_t userHeapBase = 0x0041_2000;
-enum size_t userHeapBytes = 64 * 1024;
+enum size_t userHeapBase = 0x1000_0000;
+enum size_t userHeapInitialBytes = 64 * 1024;
+// 仮想領域の上限。実際に確保できる量は空きRAMによる。
+enum size_t userHeapLimitBytes = 0x6000_0000;

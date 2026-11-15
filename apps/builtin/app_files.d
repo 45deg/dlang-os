@@ -3,13 +3,13 @@ module app_files;
 
 import file_api : FsResult, FileVersion, maxFileBytes;
 import gui_abi : DirectorySnapshot, FileTransfer, GuiFrame, savedVersion;
-import user_abi : Call, callError, userHeapBase, userHeapBytes;
+import user_abi : Call, callError, userHeapBase, userHeapInitialBytes;
 import user_api : call;
 
 private enum transferAddress = userHeapBase + GuiFrame.sizeof;
 static assert(GuiFrame.sizeof % FileTransfer.alignof == 0);
 private enum documentAddress = transferAddress + FileTransfer.sizeof;
-static assert(GuiFrame.sizeof + FileTransfer.sizeof + maxFileBytes <= userHeapBytes);
+static assert(GuiFrame.sizeof + FileTransfer.sizeof + maxFileBytes <= userHeapInitialBytes);
 
 char[] documentBuffer() pure nothrow @nogc
 {
