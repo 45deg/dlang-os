@@ -2,7 +2,7 @@
 module counter;
 
 import gui_abi : GuiEvent, GuiInput, GuiFrame, DrawCommand;
-import user_abi : Call, callError, userHeapBase;
+import user_abi : Call, callError, userHeapBase, waitForever;
 import user_api : call, exitApp, send;
 
 extern(C) noreturn appMain() nothrow @nogc
@@ -15,7 +15,7 @@ extern(C) noreturn appMain() nothrow @nogc
     while (true)
     {
         GuiInput input = void;
-        if (call(Call.guiPoll, cast(ulong) &input) == callError)
+        if (call(Call.guiWait, cast(ulong) &input, first ? 0 : paused ? waitForever : 50) == callError)
             exitApp();
         if (input.event == GuiEvent.close)
             exitApp();

@@ -576,6 +576,7 @@ def verify_windows(console, qmp, image_path):
     expect_text(qmp, image_path, 456, 334, "Paused", 2, bytes.fromhex("ffffff"))
     paused, _ = process_list(console)
     top_pid = max(counters)
+    assert_quiescent(console, top_pid)
     qmp.keys("ret")
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -786,6 +787,51 @@ def verify_disk_elf(console):
     expect_equal(free_memory(console), baseline_memory)
 
 
+def assert_quiescent(console, pid):
+    deadline = time.monotonic() + 2
+    previous = process_list(console)[0][pid]
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        current = process_list(console)[0][pid]
+        if current == previous:
+            time.sleep(0.2)
+            expect_equal(process_list(console)[0][pid], current)
+            return
+        previous = current
+    raise AssertionError(f"PID {pid} kept running while waiting")
+
+
+def verify_sleep(console):
+    baseline = free_memory(console)
+    put_file(console, b"sleep.elf", (APP_DIRECTORY / "sleep.elf").read_bytes())
+    response = console.command(b"run sleep.elf &\r")
+    match = re.fullmatch(rb"run sleep.elf &\r\nStarted PID ([0-9]+)\r\n", response)
+    if match is None:
+        raise AssertionError(response)
+    pid = int(match[1])
+    spin = spawn_process(console, b"spin")
+    before = process_list(console)[0]
+    expect_equal(before[pid][1], 1)
+    assert_quiescent(console, pid)
+    after = process_list(console)[0]
+    if after[spin][2] <= before[spin][2]:
+        raise AssertionError("sleep blocked other runnable processes")
+    deadline = time.monotonic() + 5
+    while process_list(console)[0][pid][1] != 2:
+        if time.monotonic() >= deadline:
+            raise AssertionError("sleep did not resume at its deadline")
+        time.sleep(0.05)
+    assert_quiescent(console, pid)
+    # Ring 3実行中にもUART IRQが入り、バースト転送を欠落させない。
+    burst = bytes(range(256)) * 64
+    put_file(console, b"burst.bin", burst)
+    expect_file_bytes(console, b"burst.bin", burst)
+    expect_command(console, b"rm burst.bin", b"Deleted.\r\n")
+    stop_process(console, pid)
+    stop_process(console, spin)
+    expect_equal(free_memory(console), baseline)
+
+
 def verify_virtual_memory(console):
     baseline = free_memory(console)
     before, totals = process_list(console)
@@ -971,6 +1017,7 @@ def main(qemu_command):
         experiments.write_bytes(b"DLANGFS2" + bytes(1024 * 1024 - 8))
         with boot(qemu_command, experiments) as (console, _):
             baseline_memory = free_memory(console)
+            verify_sleep(console)
             verify_virtual_memory(console)
             verify_d_initialization(console)
             verify_d_heap(console)

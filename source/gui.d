@@ -15,7 +15,8 @@ private struct GuiWindow
 {
     uint pid;
     ushort width, height;
-    bool focused, changed;
+    bool focused, changed, inputChanged, seenMounted;
+    ulong seenDiskGeneration;
     ubyte head, count;
     GuiInput[64] events;
     GuiFrame frame;
@@ -47,6 +48,9 @@ void attachGui(uint pid, Rect body)
             window.height = cast(ushort) body.height;
             window.focused = false;
             window.changed = false;
+            window.inputChanged = true;
+            window.seenDiskGeneration = generation();
+            window.seenMounted = isMounted();
             window.head = window.count = 0;
             window.frame.commandCount = window.frame.titleLength = window.frame.dirty = 0;
             window.openRequest.length = 0;
@@ -64,8 +68,19 @@ void detachGui(uint pid)
 void setGuiFocus(uint pid, bool focused)
 {
     auto window = find(pid);
-    if (window !is null)
+    if (window !is null && window.focused != focused)
+    {
         window.focused = focused;
+        window.inputChanged = true;
+    }
+}
+
+/// 未配送の入力、フォーカス、ディスク状態変更で待機中のアプリを再開する。
+bool guiInputReady(uint pid)
+{
+    const window = find(pid);
+    return window is null || window.count != 0 || window.inputChanged
+        || window.seenDiskGeneration != generation() || window.seenMounted != isMounted();
 }
 
 void sendGuiEvent(uint pid, GuiEvent kind, ushort key = 0, int x = 0, int y = 0,
@@ -195,6 +210,9 @@ private ulong poll(ref GuiWindow window, ref const AddressSpace space, ulong add
     input.diskGeneration = generation();
     if (!copyToUser(space, address, (cast(const(char)*) &input)[0 .. GuiInput.sizeof]))
         return callError;
+    window.inputChanged = false;
+    window.seenDiskGeneration = input.diskGeneration;
+    window.seenMounted = input.mounted;
     if (window.count != 0)
     {
         window.head = cast(ubyte) ((window.head + 1) % window.events.length);

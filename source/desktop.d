@@ -63,6 +63,11 @@ struct Desktop
         return true;
     }
 
+    bool hasPendingInput() const
+    {
+        return active && devices.hasPendingInput();
+    }
+
     void poll()
     {
         if (!active)

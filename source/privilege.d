@@ -1,7 +1,8 @@
-/// GDT・TSS・IDTを設定する。enterUserでRing 3に入り、割り込みフレームを保存して戻る。
+/// GDT・TSS・IDTを設定する。enterUserはRing 3の状態を保存して戻り、waitForInterruptはRing 0のHLTから復帰する。
 module privilege;
 
 import cpu : readMsr, writeMsr, writePort;
+import serial : serialReceiveInterrupt;
 import ldc.llvmasm : __asm;
 
 enum ubyte timerVector = 0x40;
@@ -47,6 +48,7 @@ private __gshared Gate[256] idt;
 align(16) private __gshared ubyte[104] tss;
 align(16) private __gshared ubyte[8192] trapStack;
 
+extern(C) private __gshared ubyte idleTimerDelivered;
 extern(C) private __gshared ulong resumeKernelStack, resumeKernelCr3;
 extern(C) private __gshared UserFrame* runningFrame;
 
@@ -54,8 +56,16 @@ nothrow @nogc:
 
 void initPrivilege()
 {
-    // このカーネルが扱う外部割り込みはローカルAPICタイマーだけ。
-    writePort(0x21, 0xff);
+    // PICを例外と重ならない0x20/0x28へ移し、UARTのIRQ4だけ許可する。
+    writePort(0x20, 0x11);
+    writePort(0xa0, 0x11);
+    writePort(0x21, 0x20);
+    writePort(0xa1, 0x28);
+    writePort(0x21, 4);
+    writePort(0xa1, 2);
+    writePort(0x21, 1);
+    writePort(0xa1, 1);
+    writePort(0x21, 0xef);
     writePort(0xa1, 0xff);
 
     gdt[1] = 0x00af9a000000ffff; // Ring 0、64ビットコード
@@ -74,6 +84,8 @@ void initPrivilege()
 
     static foreach (vector; 0 .. 32)
         setGate(vector, &trap!vector);
+    setGate(0x24, &serialInterruptEntry);
+    setGate(0x27, &ignoreSpurious); // PICのspurious IRQ7にはEOIしない。
     setGate(timerVector, &trap!timerVector);
     setGate(syscallVector, &trap!syscallVector, 0xee); // Ring 3からINTで呼べる入口
     setGate(spuriousVector, &ignoreSpurious);
@@ -153,7 +165,18 @@ extern(C) void enterUser(UserFrame*, ulong, ulong)
 private void trap(uint vector)()
 {
     asm @nogc nothrow { naked; }
-    static if (vector == 8 || (vector >= 10 && vector <= 14) || vector == 17
+    static if (vector == timerVector)
+        __asm(q{
+            testb $$3, 8(%rsp)
+            jnz 1f
+            movb $$1, idleTimerDelivered(%rip)
+            iretq
+        1:
+            pushq $$0
+            pushq $$} ~ vector.stringof ~ q{
+            jmp processTrap
+        }, "~{memory}");
+    else static if (vector == 8 || (vector >= 10 && vector <= 14) || vector == 17
                || vector == 21 || vector == 29 || vector == 30)
         __asm("pushq $$" ~ vector.stringof ~ "; jmp processTrap", "~{memory}");
     else
@@ -206,5 +229,47 @@ extern(C) private void processTrap()
         cli
         hlt
         jmp 1b
+    }, "~{memory}");
+}
+
+/// IF=0で呼ぶ。STIの直後にHLTを置き、確認と停止の間の割り込み取りこぼしを防ぐ。
+bool waitForInterrupt()
+{
+    idleTimerDelivered = 0;
+    __asm("sti; hlt; cli", "~{memory}");
+    return idleTimerDelivered != 0;
+}
+
+// 任意のユーザー/アイドル状態から呼ばれるので、汎用レジスタとスタック配置を保存する。
+private void serialInterruptEntry()
+{
+    asm @nogc nothrow { naked; }
+    __asm(q{
+        pushq %rax
+        pushq %rcx
+        pushq %rdx
+        pushq %rsi
+        pushq %rdi
+        pushq %r8
+        pushq %r9
+        pushq %r10
+        pushq %r11
+        pushq %rbx
+        movq %rsp, %rbx
+        andq $$-16, %rsp
+        cld
+        callq serialReceiveInterrupt
+        movq %rbx, %rsp
+        popq %rbx
+        popq %r11
+        popq %r10
+        popq %r9
+        popq %r8
+        popq %rdi
+        popq %rsi
+        popq %rdx
+        popq %rcx
+        popq %rax
+        iretq
     }, "~{memory}");
 }

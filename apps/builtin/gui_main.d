@@ -5,7 +5,7 @@ import app_files : updateDisk;
 import graphics : Rect, Screen;
 import gui_abi : GuiEvent, GuiFrame, GuiInput;
 import ps2 : Key;
-import user_abi : Call, callError, userHeapBase;
+import user_abi : Call, callError, userHeapBase, waitForever;
 import user_api : call, exitApp, send;
 
 version (CalcApp)
@@ -51,7 +51,10 @@ extern(C) noreturn appMain() nothrow @nogc
     while (true)
     {
         GuiInput input = void;
-        if (call(Call.guiPoll, cast(ulong) &input) == callError)
+        ulong timeout = first ? 0 : waitForever;
+        version (GameApp) timeout = first ? 0 : app.needsTimer() ? 50 : waitForever;
+        version (MonitorApp) timeout = first ? 0 : 50;
+        if (call(Call.guiWait, cast(ulong) &input, timeout) == callError)
             exitApp();
         updateDisk(input.mounted, input.diskGeneration);
         const diskChanged = diskGeneration != input.diskGeneration;

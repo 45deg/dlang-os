@@ -79,6 +79,11 @@ struct Ps2
         return true;
     }
 
+    bool hasPendingInput() const
+    {
+        return active && (readPort(commandPort) & outputFull) != 0;
+    }
+
     InputEvent poll()
     {
         if (!active)

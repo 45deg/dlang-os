@@ -34,33 +34,45 @@ struct Shell
         writeText("dlang> ");
     }
 
-    /// 1回に1バイトを処理し、入力待ちの間もGUIが動くようにする。
-    void poll()
+    /// CPUを使い切るプロセスと並行しても転送が進むよう、受信をまとめて処理する。
+    /// 上限を設け、連続入力がGUIとスケジューラを独占しないようにする。
+    bool poll()
+    {
+        bool progressed;
+        foreach (_; 0 .. 64)
+        {
+            if (!pollByte()) break;
+            progressed = true;
+        }
+        return progressed;
+    }
+
+    private bool pollByte()
     {
         if (foregroundPid != 0)
         {
             ProcessInfo info;
             if (infoFor(foregroundPid, info))
-                return;
+                return false;
             foregroundPid = 0;
             start();
         }
 
         char key;
         if (!tryReadByte(key))
-            return;
+            return false;
 
         const completesCrLf = skipNextLf && key == '\n';
         skipNextLf = key == '\r';
         if (completesCrLf)
-            return;
+            return true;
 
         if (upload.active)
         {
             upload.receive(key);
             if (!upload.active)
                 start();
-            return;
+            return true;
         }
 
         if (key == '\r' || key == '\n')
@@ -76,11 +88,11 @@ struct Shell
             escape = TerminalEscape.init;
             if (!upload.active && foregroundPid == 0)
                 start();
-            return;
+            return true;
         }
 
         if (escape.consume(key) || overflow)
-            return;
+            return true;
 
         if (key == '\b' || key == '\x7f')
         {
@@ -96,11 +108,12 @@ struct Shell
             {
                 overflow = true;
                 writeByte('\a');
-                return;
+                return true;
             }
             buffer[length++] = key;
             writeByte(key);
         }
+        return true;
     }
 }
 

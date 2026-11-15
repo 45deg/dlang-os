@@ -1,4 +1,4 @@
-/// spawnElfでELFとヒープを配置し、runNextでRing 3プロセスをラウンドロビン実行する。
+/// spawnElfでELFとヒープを配置する。runNextは入力・期限待ちを除外してRing 3を実行する。
 module process;
 
 import address_space : AddressSpace, initPaging, initUserSpace, releaseUserSpace, mapBuiltin, mapUserHeap, resizeHeap, copyFromUser,
@@ -10,9 +10,9 @@ import clock : milliseconds;
 import privilege : UserFrame, enterUser, initPrivilege, syscallVector, timerVector, userCode, userData;
 import elf : loadElf;
 import filesystem : maxNameBytes;
-import gui : guiCall;
+import gui : guiCall, guiInputReady;
 import gui_abi : maxProcesses;
-import serial : writeByte, writeText;
+import serial : writeByte, writeText, enableReceiveInterrupts;
 import user_abi : Call, callError, titleLimit, writeLimit;
 import user_program : Program, programName, userMain;
 
@@ -32,6 +32,8 @@ struct ProcessInfo
     size_t filenameLength;
 }
 
+private enum WaitKind { none, timer, gui }
+
 private struct Process
 {
     ProcessInfo info;
@@ -40,6 +42,8 @@ private struct Process
     size_t titleLength;
     bool windowPending;
     ulong closeDeadline;
+    WaitKind waiting;
+    ulong wakeDeadline;
 }
 
 private __gshared Process[processLimit] processes;
@@ -59,6 +63,7 @@ bool initProcesses()
     initPrivilege();
     if (!initTimer())
         return false;
+    enableReceiveInterrupts();
     kernelCr3 = readCr3();
     available = true;
     return true;
@@ -211,10 +216,10 @@ ProcessInfo infoAt(size_t slot)
 ulong exitedProcesses() { return exitedCount; }
 ulong faultedProcesses() { return faultedCount; }
 
-void runNext()
+bool runNext()
 {
     if (!available)
-        return;
+        return false;
 
     foreach (_; 0 .. processLimit)
     {
@@ -229,6 +234,15 @@ void runNext()
             releaseUserSpace(spaces[slot]);
             task.info.pid = 0;
             continue;
+        }
+        if (task.waiting != WaitKind.none)
+        {
+            if (milliseconds() < task.wakeDeadline
+                && (task.waiting != WaitKind.gui || !guiInputReady(task.info.pid)))
+                continue;
+            if (task.waiting == WaitKind.gui)
+                task.frame.rax = guiCall(task.info.pid, Call.guiPoll, spaces[slot], task.frame.rdi, 0);
+            task.waiting = WaitKind.none;
         }
         ++task.info.slices;
         arm();
@@ -251,8 +265,9 @@ void runNext()
         }
         if (task.info.pid == 0)
             releaseUserSpace(spaces[slot]);
-        return;
+        return true;
     }
+    return false;
 }
 
 private bool validResume(ref UserFrame frame)
@@ -269,6 +284,20 @@ private void handleCall(ref Process task, ref AddressSpace space)
 {
     switch (cast(Call) task.frame.rax)
     {
+        case Call.sleep:
+            task.frame.rax = 0;
+            task.waiting = WaitKind.timer;
+            task.wakeDeadline = deadlineAfter(task.frame.rdi);
+            break;
+        case Call.guiWait:
+            if (task.frame.rsi == 0 || guiInputReady(task.info.pid))
+                task.frame.rax = guiCall(task.info.pid, Call.guiPoll, space, task.frame.rdi, 0);
+            else
+            {
+                task.waiting = WaitKind.gui;
+                task.wakeDeadline = deadlineAfter(task.frame.rsi);
+            }
+            break;
         case Call.heapResize:
             task.frame.rax = resizeHeap(space, task.frame.rdi);
             break;
@@ -338,4 +367,10 @@ private bool readText(ref const AddressSpace space, ulong address, scope char[] 
         if ((c < ' ' || c > '~') && !(allowNewline && c == '\n'))
             return false;
     return true;
+}
+
+private ulong deadlineAfter(ulong delay)
+{
+    const now = milliseconds();
+    return delay > ulong.max - now ? ulong.max : now + delay;
 }

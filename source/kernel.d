@@ -2,7 +2,8 @@
 module kernel;
 
 import boot_info : BootInfo, initBootInfo;
-import cpu : pauseCpu, haltCpu;
+import cpu : haltCpu;
+import apic_timer : idle;
 import clock : initClock;
 import desktop : Desktop;
 import filesystem : mount;
@@ -37,9 +38,10 @@ extern(C) noreturn kernelMain(BootInfo* info) nothrow @nogc
     shell.start();
     while (true)
     {
-        shell.poll();
+        const serialProgress = shell.poll();
         desktop.poll();
-        runNext();
-        pauseCpu();
+        const ranProcess = runNext();
+        if (!ranProcess && !serialProgress && !desktop.hasPendingInput())
+            idle();
     }
 }

@@ -62,6 +62,11 @@ struct Snake
             toggle(now);
     }
 
+    bool needsTimer() const
+    {
+        return phase == Phase.playing;
+    }
+
     /// 画面の手前から外れたゲームは一時停止し、復帰はプレイヤーが選ぶ。
     bool advance(ulong now, bool hasFocus)
     {

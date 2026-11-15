@@ -5,7 +5,7 @@ import address_space : mapLocalApic;
 import core.volatile : volatileStore, volatileLoad;
 import clock : milliseconds;
 import cpu : readMsr, writeMsr;
-import privilege : timerVector;
+import privilege : timerVector, waitForInterrupt;
 
 private enum uint baseMsr = 0x1b;
 private enum uint endOfInterrupt = 0x0b0;
@@ -18,7 +18,7 @@ private enum uint maskInterrupt = 1 << 16;
 private __gshared uint quantumTicks;
 
 private __gshared uint* registers;
-private __gshared bool x2Apic;
+private __gshared bool x2Apic, available;
 
 nothrow @nogc:
 
@@ -35,6 +35,8 @@ bool initTimer()
         if (registers is null)
             return false;
     }
+    // PICのIRQ4を受けるため、LINT0をExtINTに設定する。
+    writeRegister(0x350, 0x700);
     writeRegister(taskPriority, 0);
     writeRegister(spurious, 0x1ff);
     writeRegister(timerConfig, maskInterrupt | timerVector);
@@ -49,6 +51,7 @@ bool initTimer()
     if (quantumTicks == 0 || elapsed == uint.max)
         return false;
     writeRegister(timerConfig, timerVector);
+    available = true;
     return true;
 }
 
@@ -76,4 +79,14 @@ private uint readRegister(uint offset)
 {
     return x2Apic ? cast(uint) readMsr(0x800 + offset / 16)
                   : volatileLoad(registers + offset / uint.sizeof);
+}
+
+/// PS/2はまだポーリング入力なので、最長約1 msでカーネルへ戻る。
+void idle()
+{
+    if (!available) return;
+    const ticks = quantumTicks / 5;
+    writeRegister(initialCount, ticks == 0 ? 1 : ticks);
+    const delivered = waitForInterrupt();
+    cancel(delivered);
 }
