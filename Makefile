@@ -90,7 +90,7 @@ $(D_APP_UNWIND): apps/runtime/d_unwind.d $(D_APP_RUNTIME) Makefile
 	"$(LDC)" $(FULL_D_FLAGS) -fno-moduleinfo -c -of="$@" "$<"
 
 build/apps/hello.elf: apps/experiments/hello.d $(BETTERC_APP_SUPPORT)
-build/apps/counter.elf: apps/counter/counter.d $(BETTERC_APP_SUPPORT)
+build/apps/counter.elf: apps/counter/counter.d $(BETTERC_APP_SUPPORT) source/gui_abi.d source/file_api.d
 
 build/apps/hello.elf build/apps/counter.elf:
 	mkdir -p "$(@D)"

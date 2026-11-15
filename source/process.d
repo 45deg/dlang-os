@@ -5,26 +5,20 @@ import address_space : AddressSpace, initPaging, initUserSpace, resetUserSpace, 
     userCodeAddress, userImageEnd, userStackBase, userStackTop, __user_app_start;
 import apic_timer : initTimer, arm, cancel;
 import cpu : readCr3;
+import clock : milliseconds;
 import privilege : UserFrame, enterUser, initPrivilege, syscallVector, timerVector, userCode, userData;
 import elf : loadElf;
 import filesystem : maxNameBytes;
 import gui : guiCall;
 import gui_abi : maxProcesses;
 import serial : writeByte, writeText;
-import user_abi : Call, WindowEvent, callError, textLimit, titleLimit, writeLimit;
+import user_abi : Call, callError, titleLimit, writeLimit;
 import user_program : Program, programName, userMain;
 
 enum processLimit = maxProcesses;
 enum ElfStart { ok, unavailable, invalid }
 private enum ulong userStatusFlags = 0xcd5; // OF, DF, SF, ZF, AF, PF, CF
 private enum ulong userInterruptsEnabled = 0x202;
-
-struct AppWindow
-{
-    char[titleLimit] title = void;
-    char[textLimit] text = void;
-    size_t titleLength, textLength;
-}
 
 struct ProcessInfo
 {
@@ -41,10 +35,10 @@ private struct Process
 {
     ProcessInfo info;
     UserFrame frame;
-    AppWindow window;
-    WindowEvent event;
+    char[titleLimit] title;
+    size_t titleLength;
     bool windowPending;
-    uint closeBudget;
+    ulong closeDeadline;
 }
 
 private __gshared Process[processLimit] processes;
@@ -169,6 +163,14 @@ bool stop(uint pid)
     return true;
 }
 
+/// 保存確認が不要な窓に終了猶予を与える。繰り返し通知しても期限は延長しない。
+void requestClose(uint pid)
+{
+    auto task = find(pid);
+    if (task !is null && task.closeDeadline == 0)
+        task.closeDeadline = milliseconds() + 1000;
+}
+
 bool infoFor(uint pid, out ProcessInfo info)
 {
     const task = find(pid);
@@ -187,31 +189,10 @@ uint takeWindowRequest(size_t slot)
     return task.info.pid;
 }
 
-bool windowFor(uint pid, out AppWindow window)
-{
-    const task = find(pid);
-    if (task is null || task.window.titleLength == 0)
-        return false;
-    window = task.window;
-    return true;
-}
-
 const(char)[] windowTitleFor(uint pid)
 {
     const task = find(pid);
-    return task is null ? null : task.window.title[0 .. task.window.titleLength];
-}
-
-void windowInput(uint pid, WindowEvent event)
-{
-    auto task = find(pid);
-    if (task is null || task.window.titleLength == 0 || task.closeBudget != 0)
-        return;
-
-    task.event = event;
-    // 閉じる通知を無視するアプリが残り続けないよう、処理できる実行回数を区切る。
-    if (event == WindowEvent.close)
-        task.closeBudget = 24;
+    return task is null ? null : task.title[0 .. task.titleLength];
 }
 
 ProcessInfo infoAt(size_t slot)
@@ -235,6 +216,11 @@ void runNext()
         if (task.info.pid == 0)
             continue;
 
+        if (task.closeDeadline != 0 && milliseconds() >= task.closeDeadline)
+        {
+            task.info.pid = 0;
+            continue;
+        }
         ++task.info.slices;
         arm();
         enterUser(&task.frame, spaces[slot].cr3, kernelCr3);
@@ -254,8 +240,6 @@ void runNext()
             ++faultedCount;
             task.info.pid = 0;
         }
-        if (task.info.pid != 0 && task.closeBudget != 0 && --task.closeBudget == 0)
-            task.info.pid = 0;
         return;
     }
 }
@@ -288,15 +272,8 @@ private void handleCall(ref Process task, ref const AddressSpace space)
         case Call.write:
             task.frame.rax = userWrite(space, task.frame.rdi, task.frame.rsi);
             break;
-        case Call.windowOpen:
+        case Call.guiCreate:
             task.frame.rax = openWindow(task, space);
-            break;
-        case Call.windowText:
-            task.frame.rax = updateWindow(task, space);
-            break;
-        case Call.windowEvent:
-            task.frame.rax = cast(ulong) task.event;
-            task.event = WindowEvent.none;
             break;
         case Call.guiPoll, Call.guiPresent, Call.guiDirectory, Call.guiReadFile, Call.guiSaveFile,
             Call.guiOpenDocument, Call.guiMonitor:
@@ -328,28 +305,14 @@ private ulong openWindow(ref Process task, ref const AddressSpace space)
 {
     const length = task.frame.rsi;
     char[titleLimit] title = void;
-    if (task.window.titleLength || length == 0 || length > title.length
+    if (task.titleLength || length == 0 || length > title.length
         || !readText(space, task.frame.rdi, title[0 .. length], false))
         return callError;
 
     foreach (i; 0 .. length)
-        task.window.title[i] = title[i];
-    task.window.titleLength = length;
+        task.title[i] = title[i];
+    task.titleLength = length;
     task.windowPending = true;
-    return 0;
-}
-
-private ulong updateWindow(ref Process task, ref const AddressSpace space)
-{
-    const length = task.frame.rsi;
-    char[textLimit] line = void;
-    if (task.window.titleLength == 0 || length > line.length
-        || !readText(space, task.frame.rdi, line[0 .. length], false))
-        return callError;
-
-    foreach (i; 0 .. length)
-        task.window.text[i] = line[i];
-    task.window.textLength = length;
     return 0;
 }
 

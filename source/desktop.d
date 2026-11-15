@@ -3,7 +3,6 @@
 module desktop;
 
 import application : launchDesktopApp;
-import clock : milliseconds;
 import desktop_theme : App, accent, accentLight, appName, apps, appsButton, button, centeredText,
     divider, drawShortcut, drawWallpaper, ink, labelWithin, menuBounds, menuItem, muted, paper,
     shortcut, taskbarHeight, titleHeight, toolbar, warning;
@@ -12,10 +11,8 @@ import graphics : Rect, Screen, maximum, minimum;
 import gui : attachGui, detachGui, drawGui, guiDirty, guiTitle, sendGuiEvent, setGuiFocus, takeDocumentRequest,
     takeGuiChange;
 import gui_abi : DirectoryEntry, GuiEvent, maxGuiWindows;
-import numbers : decimalText;
-import process : AppWindow, ProcessInfo, infoFor, processLimit, takeWindowRequest, windowFor, windowInput, windowTitleFor;
+import process : ProcessInfo, infoFor, processLimit, takeWindowRequest, stop, requestClose, windowTitleFor;
 import ps2 : InputKind, Key, MouseEvent, Ps2;
-import user_abi : WindowEvent;
 
 private enum windowLimit = maxGuiWindows;
 private enum editorLimit = 4;
@@ -50,7 +47,6 @@ struct Desktop
     private size_t dragged = noWindow;
     private bool draggingContent;
     private int grabX, grabY;
-    private ulong lastLivePaint;
 
     nothrow @nogc:
 
@@ -74,7 +70,6 @@ struct Desktop
 
         const event = devices.poll();
         const windowsChanged = syncAppWindows();
-        const now = milliseconds();
 
         if (event.kind == InputKind.keyboard)
         {
@@ -90,21 +85,14 @@ struct Desktop
             if (windowsChanged || (changed && movedWindow.width == 0))
                 redraw(fullScreen());
             else if (movedWindow.width != 0)
-                redraw(movedWindow.covering(cursorDamage).covering(liveDamage()));
+                redraw(movedWindow.covering(cursorDamage));
             else if (event.mouse.dx || event.mouse.dy)
                 present(cursorDamage);
         }
         else if (windowsChanged)
             redraw(fullScreen());
-        else if (now - lastLivePaint >= 50)
-        {
-            const damage = liveDamage();
-            if (damage.width > 0)
-                redraw(damage);
-        }
         foreach (slot; order[0 .. windowCount])
-            if (windows[slot].app != App.counter)
-                setGuiFocus(windows[slot].pid, focused == slot && !menuOpen && !windows[slot].minimized);
+            setGuiFocus(windows[slot].pid, focused == slot && !menuOpen && !windows[slot].minimized);
     }
 
     private Rect fullScreen() const
@@ -168,10 +156,7 @@ struct Desktop
             return;
 
         const window = &windows[focused];
-        if (window.app != App.counter)
-            sendGuiEvent(window.pid, GuiEvent.key, cast(ushort) key);
-        else if (key == Key.enter || key == ' ')
-            windowInput(window.pid, WindowEvent.activate);
+        sendGuiEvent(window.pid, GuiEvent.key, cast(ushort) key);
     }
 
     private void toggleMenu()
@@ -272,8 +257,6 @@ struct Desktop
                     grabX = pointer.x - window.bounds.x;
                     grabY = pointer.y - window.bounds.y;
                 }
-                else if (window.app == App.counter)
-                    windowInput(window.pid, WindowEvent.activate);
                 else
                 {
                     const body = bodyOf(window.bounds);
@@ -326,7 +309,7 @@ struct Desktop
         uint pid;
         notice = launchDesktopApp(app, pid);
         if (pid == 0 || app == App.counter)
-            return noWindow; // Counterは既存のwindowOpenで窓を要求する。
+            return noWindow; // アプリ自身のguiCreateで窓を要求する。
 
         attachWindow(slot, app, pid);
         attachGui(pid, bodyOf(windows[slot].bounds));
@@ -410,15 +393,11 @@ struct Desktop
     private void close(size_t slot)
     {
         const window = &windows[slot];
-        if (window.app != App.counter)
-        {
-            if (window.app == App.editor)
-                bringForward(slot);
-            sendGuiEvent(window.pid, GuiEvent.close);
-            return;
-        }
-        windowInput(window.pid, WindowEvent.close);
-        remove(slot);
+        if (window.app == App.editor)
+            bringForward(slot);
+        if (!guiDirty(window.pid))
+            requestClose(window.pid);
+        sendGuiEvent(window.pid, GuiEvent.close);
     }
 
     private void remove(size_t slot)
@@ -443,13 +422,11 @@ struct Desktop
         {
             if (!window.open)
                 continue;
-            AppWindow legacy;
             ProcessInfo process;
-            const alive = window.app == App.counter ? windowFor(window.pid, legacy) : infoFor(window.pid, process);
+            const alive = infoFor(window.pid, process);
             if (!alive)
             {
-                if (window.app != App.counter)
-                    detachGui(window.pid);
+                detachGui(window.pid);
                 remove(slot);
                 changed = true;
                 continue;
@@ -460,7 +437,7 @@ struct Desktop
                 openFile(request.name[0 .. request.length]);
                 changed = true;
             }
-            if (window.app != App.counter && takeGuiChange(window.pid))
+            if (takeGuiChange(window.pid))
             {
                 window.pendingDocument.length = 0;
                 changed = changed || !window.minimized;
@@ -477,22 +454,16 @@ struct Desktop
             if (slot == windowLimit)
             {
                 notice = "Close a window before opening another.";
-                windowInput(pid, WindowEvent.close);
+                stop(pid);
             }
             else
+            {
                 attachWindow(slot, App.counter, pid);
+                attachGui(pid, bodyOf(windows[slot].bounds));
+            }
             changed = true;
         }
         return changed;
-    }
-
-    private Rect liveDamage()
-    {
-        Rect damage;
-        foreach (ref window; windows)
-            if (window.open && !window.minimized && window.app == App.counter)
-                damage = damage.covering(bodyOf(window.bounds));
-        return damage;
     }
 
     private Rect withShadow(Rect bounds)
@@ -581,7 +552,6 @@ struct Desktop
         }
         if (menuOpen)
             drawMenu();
-        lastLivePaint = milliseconds();
         present(damage);
     }
 
@@ -648,37 +618,10 @@ struct Desktop
         screen.fill(closeRect, warning);
         centeredText(screen, closeRect, "x", paper);
         const body = bodyOf(bounds);
-        if (window.app == App.counter)
-            drawCounter(body, window.pid);
-        else
-        {
-            screen.fill(body, paper);
-            drawGui(window.pid, screen, body);
-        }
-    }
-
-    private void drawCounter(Rect body, uint pid)
-    {
         screen.fill(body, paper);
-        AppWindow app;
-        if (!windowFor(pid, app))
-            return;
-        screen.text(body.x + 13, body.y + 11, "User process", muted);
-        screen.text(body.x + 167, body.y + 11, "PID", muted);
-        drawNumber(body.x + 199, body.y + 11, pid, 1);
-        const line = app.text[0 .. app.textLength];
-        if (line.length <= 14)
-            screen.text(body.x + 13, body.y + 34, line, ink, 2);
-        else
-            screen.text(body.x + 13, body.y + 39, line, ink);
-        screen.text(body.x + 13, body.y + 71, "Click or Enter sends input", muted);
+        drawGui(window.pid, screen, body);
     }
 
-    private void drawNumber(int x, int y, ulong value, int scale)
-    {
-        char[20] digits = void;
-        screen.text(x, y, decimalText(value, digits), ink, scale);
-    }
 }
 
 private struct Pointer
