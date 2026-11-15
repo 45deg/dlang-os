@@ -38,6 +38,8 @@ private GuiWindow* find(uint pid)
     return null;
 }
 
+bool hasGui(uint pid) { return find(pid) !is null; }
+
 void attachGui(uint pid, Rect body)
 {
     foreach (ref window; windows)

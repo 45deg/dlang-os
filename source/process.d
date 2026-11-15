@@ -10,7 +10,7 @@ import clock : milliseconds;
 import privilege : UserFrame, enterUser, initPrivilege, syscallVector, timerVector, userCode, userData;
 import elf : loadElf;
 import filesystem : maxNameBytes;
-import gui : guiCall, guiInputReady;
+import gui : guiCall, guiInputReady, hasGui;
 import gui_abi : maxProcesses;
 import serial : writeByte, writeText, enableReceiveInterrupts;
 import user_abi : Call, callError, titleLimit, writeLimit;
@@ -355,7 +355,7 @@ private ulong openWindow(ref Process task, ref const AddressSpace space)
     foreach (i; 0 .. length)
         task.title[i] = title[i];
     task.titleLength = length;
-    task.windowPending = true;
+    task.windowPending = !hasGui(task.info.pid);
     return 0;
 }
 

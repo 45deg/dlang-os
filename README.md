@@ -73,13 +73,13 @@ make test
 - `boot/loader.d` は起動元のESPから `kernel.elf` を読み込み、GOPの画面情報とメモリマップを取得します。`boot/boot_paging.d` でページテーブルを作り、UEFIのブートサービスを終了して `source/boot_info.d` の起動情報を渡します。
 - `source/kernel.d` は起動情報を受け取り、ディスクをマウントしてシリアルとGUIのポーリングを始めます。
 - `source/pci.d` がPCI機器を列挙し、`source/ata.d` がIDEの両チャネル・両ドライブをIDENTIFYで検査します。`source/storage.d` と `source/block_device.d` を通して、ファイルシステムに容量とブロックI/Oを渡します。`source/filesystem.d` は各ファイルを2世代分保持します。保存時は古い側に本文をセクタ単位で書き、チェックサムを含むメタデータを最後に書きます。起動時は有効な世代のうち新しい方を選びます。ブート用の仮想FATは読み取り専用で、データ用のDlangFSとは別です。
-- `source/desktop.d` はデスクトップ、タスクバー、ウィンドウの前後関係を管理します。`source/ps2.d` はキーボードとマウス、`source/shell.d` はシリアルシェルです。
+- `source/app_registry.d` が同梱アプリの起動先、窓配置、多重起動上限、起動キー、文書担当を定義します。`source/desktop.d` はデスクトップ、タスクバー、ウィンドウの前後関係を管理します。`source/ps2.d` はキーボードとマウス、`source/shell.d` はシリアルシェルです。
 - `source/graphics.d` は解像度に合わせて確保したRAMに画面を合成し、完成した画素をUEFIから引き継いだフレームバッファへ転送します。カーソルやウィンドウの移動とCounterの定期更新では、影響を受ける範囲だけを転送します。
 - `source/privilege.d` はGDT、TSS、IDTを設定してRing 3に切り替えます。各プロセスは独立したページテーブルとユーザースタックを持ち、組み込みの実行コードを読み取り専用で共有します。
 - `source/process.d` は最大15プロセスをラウンドロビンで実行します。同時に開けるウィンドウは7枚です。システムコールは `INT 0x80` を使い、ユーザープロセスが処理を譲らない場合はローカルAPICのタイマーで実行を中断します。
 - `source/gui.d` はデスクトップから起動したアプリに入力を届け、アプリから受け取った描画命令を検証してウィンドウの内側に合成します。
 
-Counterは `apps/counter/`、Files、Editor、Calc、Game、Monitor は `apps/builtin/` から ELF にビルドし、DlangFS に配置します。デスクトップのランチャーは、ディスク上の ELF を読み込み、それぞれを独立した Ring 3 プロセスとして起動します。`apps/experiments/` のサンプルをビルドして実行する手順とABIは [apps/README.md](apps/README.md) にあります。保存前の編集内容はゲストメモリにあります。実機での起動は未検証です。
+Counterは `apps/counter/`、Files、Editor、Calc、Game、Monitor は `apps/builtin/` から ELF にビルドし、DlangFS に配置します。デスクトップのランチャーは、ディスク上の ELF を読み込み、それぞれを独立した Ring 3 プロセスとして起動します。`apps/experiments/` のサンプルをビルドして実行する手順とABIは [apps/README.md](apps/README.md) にあります。ランチャーからは全アプリを同じ手順で起動します。シェルから起動した未登録のELFも `guiCreate` で窓を作れ、タイトルはアプリが指定します。登録表は現状ビルド時の設定です。保存前の編集内容はゲストメモリにあります。実機での起動は未検証です。
 
 ### 時刻源
 

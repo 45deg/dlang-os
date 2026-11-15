@@ -3,6 +3,7 @@
 module desktop;
 
 import application : launchDesktopApp;
+import app_registry : registration, documentApp;
 import desktop_theme : App, accent, accentLight, appName, apps, appsButton, button, centeredText,
     divider, drawShortcut, drawWallpaper, ink, labelWithin, menuBounds, menuItem, muted, paper,
     shortcut, taskbarHeight, titleHeight, toolbar, warning;
@@ -15,9 +16,7 @@ import process : ProcessInfo, infoFor, processLimit, takeWindowRequest, stop, re
 import ps2 : InputKind, Key, MouseEvent, Ps2;
 
 private enum windowLimit = maxGuiWindows;
-private enum editorLimit = 4;
 private enum noWindow = windowLimit;
-private immutable string[apps.length] launchKeys = ["F5", "F8", "F9", "", "", ""];
 
 private struct Window
 {
@@ -142,11 +141,14 @@ struct Desktop
         }
         notice = null;
 
+        foreach (app; apps)
+            if (registration(app).launchKey != Key.init && registration(app).launchKey == key)
+            {
+                launch(app);
+                return;
+            }
         switch (key)
         {
-            case Key.openFiles: launch(App.files); return;
-            case Key.newEditor: launch(App.editor); return;
-            case Key.newCounter: launch(App.counter); return;
             case Key.cycleWindow: cycleWindows(); return;
             case Key.closeWindow:
                 if (focused != noWindow)
@@ -155,8 +157,8 @@ struct Desktop
             default: break;
         }
 
-        if (key == Key.newFile && (focused == noWindow || windows[focused].app != App.editor))
-            launch(App.editor);
+        if (key == Key.newFile && (focused == noWindow || !registration(windows[focused].app).documents))
+            launch(documentApp());
         if (focused == noWindow)
             return;
 
@@ -266,11 +268,8 @@ struct Desktop
                 {
                     const body = bodyOf(window.bounds);
                     sendGuiEvent(window.pid, GuiEvent.click, 0, pointer.x - body.x, pointer.y - body.y);
-                    if (window.app == App.editor)
-                    {
-                        dragged = slot;
-                        draggingContent = true;
-                    }
+                    dragged = slot;
+                    draggingContent = true;
                 }
             }
             return true;
@@ -289,23 +288,28 @@ struct Desktop
     private size_t launch(App app)
     {
         size_t slot = noWindow;
-        uint editorCount;
+        uint instanceCount;
+        const policy = registration(app);
+        if (app == App.external)
+        {
+            notice = "No document application is registered.";
+            return noWindow;
+        }
         foreach (i, ref window; windows)
         {
             if (!window.open && slot == noWindow)
                 slot = i;
             if (window.open && window.app == app)
             {
-                if (app == App.files || app == App.game || app == App.monitor)
+                if (policy.instances == 1)
                 {
                     bringForward(i);
                     return i;
                 }
-                if (app == App.editor)
-                    ++editorCount;
+                ++instanceCount;
             }
         }
-        if (slot == noWindow || editorCount >= editorLimit)
+        if (slot == noWindow || (policy.instances != 0 && instanceCount >= policy.instances))
         {
             notice = "Close a window before opening another.";
             return noWindow;
@@ -313,8 +317,8 @@ struct Desktop
 
         uint pid;
         notice = launchDesktopApp(app, pid);
-        if (pid == 0 || app == App.counter)
-            return noWindow; // アプリ自身のguiCreateで窓を要求する。
+        if (pid == 0)
+            return noWindow;
 
         attachWindow(slot, app, pid);
         attachGui(pid, bodyOf(windows[slot].bounds));
@@ -335,20 +339,10 @@ struct Desktop
     private Rect initialBounds(App app) const
     {
         const offset = cast(int) (windowCount % 4);
-        int x, y, width, height;
-        final switch (app)
-        {
-            case App.files: x = 128; y = 49; width = 294; height = 354; break;
-            case App.editor: x = 199 + offset * 24; y = 76 + offset * 29; width = 468; height = 340; break;
-            case App.counter: x = screen.width - 292 - offset * 33; y = 113 + offset * 81;
-                width = 256; height = 123; break;
-            case App.calc: x = 185 + offset * 18; y = 64 + offset * 20;
-                width = 282; height = 312; break;
-            case App.game: x = 207 + offset * 22; y = 94 + offset * 25;
-                width = 334; height = 303; break;
-            case App.monitor: x = screen.width - 448 - offset * 14; y = 55 + offset * 17;
-                width = 420; height = 319; break;
-        }
+        const policy = registration(app);
+        const width = policy.bounds.width, height = policy.bounds.height;
+        const x = policy.bounds.x + (policy.fromRight ? screen.width : 0) + offset * policy.cascadeX;
+        const y = policy.bounds.y + offset * policy.cascadeY;
         return Rect(minimum(x, screen.width - width - 12),
             minimum(y, screen.height - taskbarHeight - height - 12), width, height);
     }
@@ -398,7 +392,7 @@ struct Desktop
     private void close(size_t slot)
     {
         const window = &windows[slot];
-        if (window.app == App.editor)
+        if (guiDirty(window.pid))
             bringForward(slot);
         if (!guiDirty(window.pid))
             requestClose(window.pid);
@@ -437,7 +431,7 @@ struct Desktop
                 continue;
             }
             DirectoryEntry request;
-            if (window.app == App.files && takeDocumentRequest(window.pid, request))
+            if (takeDocumentRequest(window.pid, request))
             {
                 openFile(request.name[0 .. request.length]);
                 changed = true;
@@ -463,7 +457,7 @@ struct Desktop
             }
             else
             {
-                attachWindow(slot, App.counter, pid);
+                attachWindow(slot, App.external, pid);
                 attachGui(pid, bodyOf(windows[slot].bounds));
             }
             changed = true;
@@ -497,7 +491,7 @@ struct Desktop
 
         foreach (slot, ref window; windows)
         {
-            if (!window.open || window.app != App.editor)
+            if (!window.open || !registration(window.app).documents)
                 continue;
             const pending = window.pendingDocument.name[0 .. window.pendingDocument.length];
             if (pending == name || guiTitle(window.pid) == name)
@@ -508,7 +502,7 @@ struct Desktop
             }
         }
 
-        const slot = launch(App.editor);
+        const slot = launch(documentApp());
         if (slot != noWindow)
         {
             auto window = &windows[slot];
@@ -562,10 +556,10 @@ struct Desktop
 
     private const(char)[] windowTitle(size_t slot)
     {
-        if (windows[slot].app == App.counter)
-            return windowTitleFor(windows[slot].pid);
         const title = guiTitle(windows[slot].pid);
-        return title.length ? title : appName(windows[slot].app);
+        if (title.length) return title;
+        const requested = windowTitleFor(windows[slot].pid);
+        return requested.length ? requested : appName(windows[slot].app);
     }
 
     private void drawTaskbar()
@@ -600,7 +594,7 @@ struct Desktop
             labelWithin(screen, Rect(item.x + 10, item.y, item.width - 20, item.height),
                 appName(app), ink);
             labelWithin(screen, Rect(item.x + item.width - 28, item.y, 24, item.height),
-                launchKeys[cast(size_t) app], muted);
+                registration(app).keyLabel, muted);
         }
     }
 
@@ -613,7 +607,7 @@ struct Desktop
         screen.fill(bounds, activeWindow ? accent : muted);
         labelWithin(screen, Rect(bounds.x + 10, bounds.y, bounds.width - 67, titleHeight),
             windowTitle(slot), paper);
-        if (window.app == App.editor && guiDirty(window.pid))
+        if (guiDirty(window.pid))
             centeredText(screen, Rect(bounds.x + bounds.width - 67, bounds.y, 14, titleHeight), "*", paper);
 
         const minimizeRect = minimizeButton(bounds);

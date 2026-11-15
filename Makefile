@@ -29,7 +29,7 @@ BUILTIN_GUI_ELFS := $(addprefix build/apps/,$(addsuffix .elf,calc game monitor f
 GUI_APP_ELFS := $(BUILTIN_GUI_ELFS) build/apps/counter.elf
 APP_ELFS := build/apps/sleep.elf build/apps/vm.elf build/apps/hello.elf $(GUI_APP_ELFS) $(D_APP_ELFS)
 GUI_COMMON := apps/builtin/gui_main.d apps/builtin/app_files.d apps/user_api.d \
-              source/gui_abi.d source/file_api.d source/desktop_theme.d source/graphics.d source/numbers.d source/runtime.d
+              source/gui_abi.d source/file_api.d source/app_registry.d source/desktop_theme.d source/graphics.d source/numbers.d source/runtime.d
 GUI_INPUTS := $(GUI_COMMON) source/user_abi.d source/font.d source/ps2.d $(FONT_ATLASES) apps/app.ld Makefile
 BETTERC_APP_SUPPORT := apps/user_api.d source/user_abi.d apps/app.ld Makefile
 D_APP_RUNTIME := apps/d_start.d apps/runtime/object.d apps/runtime/d_allocation.d \

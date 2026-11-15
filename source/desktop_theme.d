@@ -15,22 +15,14 @@ enum uint toolbar = 0xe9eef4;
 enum int taskbarHeight = 36;
 enum int titleHeight = 25;
 
-enum App { files, editor, counter, calc, game, monitor }
-immutable App[6] apps = [App.files, App.editor, App.counter, App.calc, App.game, App.monitor];
+public import app_registry : App, apps;
+import app_registry : registration;
 
 nothrow @nogc:
 
 const(char)[] appName(App app)
 {
-    final switch (app)
-    {
-        case App.files: return "Files";
-        case App.editor: return "Editor";
-        case App.counter: return "Counter";
-        case App.calc: return "Calc";
-        case App.game: return "Game";
-        case App.monitor: return "Monitor";
-    }
+    return registration(app).title;
 }
 
 Rect shortcut(App app)
@@ -46,7 +38,7 @@ Rect appsButton(int height)
 
 Rect menuBounds(int height)
 {
-    enum menuHeight = cast(int) apps.length * 33 + 14;
+    const menuHeight = cast(int) apps.length * 33 + 14;
     return Rect(8, height - taskbarHeight - menuHeight - 7, 191, menuHeight);
 }
 
@@ -101,6 +93,7 @@ private void icon(ref Screen screen, App app, int x, int y)
             screen.fill(Rect(x + 1, y + 10, 31, 20), 0xefc57e);
             screen.fill(Rect(x + 3, y + 14, 29, 16), 0xffda97);
             break;
+        case App.external:
         case App.editor:
             screen.fill(Rect(x + 6, y + 1, 21, 30), 0xdde9f5);
             screen.fill(Rect(x + 22, y + 1, 5, 6), 0xa5bed8);

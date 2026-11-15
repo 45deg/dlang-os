@@ -1075,6 +1075,37 @@ def verify_volume_layout(qemu_command, root):
         expect_equal(invalid.read_bytes(), image)
 
 
+def verify_external_gui(qemu_command, root):
+    disk = root / "external-gui.img"
+    format_disk(disk)
+    # 未登録の別名・別タイトルでも、共通guiCreateで窓を作れる。
+    binary = (APP_DIRECTORY / "counter.elf").read_bytes()
+    expect_equal(binary.count(b"Counter"), 1)
+    binary = binary.replace(b"Counter", b"Example")
+    with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
+        put_file(console, b"example.elf", binary)
+        screen = root / "external-gui.ppm"
+        baseline = qmp.capture(screen).split(b"\n", 3)
+        width = int(baseline[1].split()[0])
+        offset = (115 * width + 510) * 3
+        background = baseline[3][offset:offset + 3]
+        response = console.command(b"run example.elf &\r")
+        if re.fullmatch(rb"run example.elf &\r\nStarted PID [0-9]+\r\n", response) is None:
+            raise AssertionError(response)
+        expect_text(qmp, screen, 518, 118, "Example", 1,
+                    bytes.fromhex("135a56"), bytes.fromhex("ffffff"))
+        running, totals = wait_process_names(console, b"example.elf")
+        pid = next(iter(running))
+        qmp.keys("ret")
+        expect_text(qmp, screen, 522, 172, "Paused", 2, bytes.fromhex("ffffff"))
+        assert_quiescent(console, pid)
+        qmp.keys("f10")
+        _, after = wait_process_names(console)
+        expect_equal(after, (totals[0] + 1, totals[1]))
+        # 閉じた後に窓が残らず、背景へ戻ることを確認する。
+        qmp.until_pixel(screen, 510, 115, background)
+
+
 def verify_storage_discovery(qemu_command, root):
     unrelated = root / "unrelated.img"
     untouched = b"OTHERIMG" + bytes(1024 * 1024 - 8)
@@ -1172,6 +1203,7 @@ def main(qemu_command):
         verify_migration_and_large_files(qemu_command, root)
         verify_volume_layout(qemu_command, root)
         verify_storage_discovery(qemu_command, root)
+        verify_external_gui(qemu_command, root)
 
     print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, v1 migration, persistence, and disk recovery")
 

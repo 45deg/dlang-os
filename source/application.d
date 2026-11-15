@@ -1,7 +1,7 @@
 /// DlangFS上のELFを読み込み、独立したユーザープロセスとして起動する。
 module application;
 
-import desktop_theme : App;
+import app_registry : App, registration;
 import filesystem : FsResult, FileVersion, errorText, open;
 import process : ElfStart, spawnElf;
 
@@ -22,13 +22,5 @@ const(char)[] launchFile(scope const(char)[] name, out uint pid) nothrow @nogc
 
 const(char)[] launchDesktopApp(App app, out uint pid) nothrow @nogc
 {
-    final switch (app)
-    {
-        case App.files: return launchFile("files.elf", pid);
-        case App.editor: return launchFile("editor.elf", pid);
-        case App.calc: return launchFile("calc.elf", pid);
-        case App.game: return launchFile("game.elf", pid);
-        case App.monitor: return launchFile("monitor.elf", pid);
-        case App.counter: return launchFile("counter.elf", pid);
-    }
+    return launchFile(registration(app).executable, pid);
 }
