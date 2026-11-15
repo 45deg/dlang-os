@@ -2,7 +2,10 @@
 /// commitは本文を先に書き、世代番号とチェックサムを最後に公開する。
 module filesystem;
 
-import ata : Sector, initDisk, readSector, sectorBytes, writeSector;
+import block_device : BlockDevice, Sector, sectorBytes;
+import storage : initStorage, blockDevices;
+
+private __gshared BlockDevice disk;
 
 public import file_api;
 
@@ -82,8 +85,22 @@ bool mount()
     mounted = false;
     entries[] = Entry.init;
     Sector header, last;
-    if (!initDisk() || !readSector(0, header))
-        return false;
+    if (!initStorage()) return false;
+    bool found;
+    foreach (candidate; blockDevices())
+    {
+        Sector first;
+        if (!candidate.read(0, first)) continue;
+        const magic = (cast(const(char)*) first.ptr)[0 .. 8];
+        if (!equal(magic, legacyMagic) && !equal(magic, currentMagic) && !equal(magic, layoutMagic))
+            continue;
+        // 複数のDlangFS候補がある場合、接続順だけで書き込み先を決めない。
+        if (found) return false;
+        disk = candidate;
+        header = first;
+        found = true;
+    }
+    if (!found) return false;
     if (hasMagic(header, currentMagic) || hasMagic(header, legacyMagic))
     {
         volumeSlots = oldFileSlots;
@@ -93,12 +110,12 @@ bool mount()
     }
     else if (!readLayout(header))
         return false;
-    // 64bitで配置を検査してからATAのLBAへ変換する。
+    // 配置を64bitで検査し、選択したブロックデバイスの容量内に収まることを確かめる。
     const end = cast(ulong) recordsLba + cast(ulong) volumeSlots * 2 * sectorsPerCopy;
     if (volumeSlots == 0 || volumeSlots > fileLimit || volumeFileBytes == 0 || volumeFileBytes > maxFileBytes
         || volumeFileBytes > ushort.max || recordsLba == 0
         || sectorsPerCopy < 1 + (volumeFileBytes + sectorBytes - 1) / sectorBytes
-        || end > 0x1000_0000 || !readSector(cast(uint) (end - 1), last))
+        || end > disk.sectorCount || end > 0x1_0000_0000 || !readSector(cast(uint) (end - 1), last))
         return false;
     if (hasMagic(header, legacyMagic))
     {
@@ -467,4 +484,14 @@ private bool equal(scope const(char)[] left, scope const(char)[] right)
         if (c != right[i])
             return false;
     return true;
+}
+
+private bool readSector(uint lba, out Sector sector)
+{
+    return disk.read(lba, sector);
+}
+
+private bool writeSector(uint lba, ref const Sector sector)
+{
+    return disk.write(lba, sector);
 }

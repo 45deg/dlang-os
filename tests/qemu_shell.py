@@ -231,8 +231,10 @@ def expect_text(qmp, path, x, y, value, scale, background, foreground=bytes.from
 
 
 @contextmanager
-def boot(qemu_command, disk, *, with_qmp=False, disk_ready=True):
-    command = [*qemu_command, "-drive", f"if=ide,index=0,format=raw,file={disk}"]
+def boot(qemu_command, disk, *, with_qmp=False, disk_ready=True, drive_index=0, extra_drives=()):
+    command = [*qemu_command, "-drive", f"if=ide,index={drive_index},format=raw,file={disk}"]
+    for index, path in extra_drives:
+        command += ["-drive", f"if=ide,index={index},format=raw,file={path}"]
     with ExitStack() as stack:
         pass_fds = ()
         if with_qmp:
@@ -1072,6 +1074,41 @@ def verify_volume_layout(qemu_command, root):
         expect_equal(invalid.read_bytes(), image)
 
 
+def verify_storage_discovery(qemu_command, root):
+    unrelated = root / "unrelated.img"
+    untouched = b"OTHERIMG" + bytes(1024 * 1024 - 8)
+    unrelated.write_bytes(untouched)
+    # primary slave、secondary master/slaveでも同じファイル操作が成立する。
+    for index in (1, 2, 3):
+        disk = root / f"ide-position-{index}.img"
+        format_disk(disk)
+        options = dict(drive_index=index, extra_drives=((0, unrelated),))
+        with boot(qemu_command, disk, **options) as (console, _):
+            expect_command(console, b"write location.txt discovered", b"Saved.\r\n")
+        with boot(qemu_command, disk, **options) as (console, _):
+            expect_command(console, b"cat location.txt", b"discovered\r\n")
+        expect_equal(unrelated.read_bytes(), untouched)
+
+    # 候補が複数あればv1の移行も始めず、どちらのディスクにも書かない。
+    first = root / "ambiguous-v1.img"
+    second = root / "ambiguous-v3.img"
+    first.write_bytes(old_disk_image())
+    format_disk(second)
+    originals = (first.read_bytes(), second.read_bytes())
+    with boot(qemu_command, first, disk_ready=False, extra_drives=((1, second),)) as (console, _):
+        expect_command(console, b"write forbidden.txt no", b"Data disk unavailable.\r\n")
+    expect_equal((first.read_bytes(), second.read_bytes()), originals)
+
+    # 正しいヘッダでも、IDENTIFYの実容量を越えるレイアウトは拒否する。
+    small = root / "truncated-volume.img"
+    format_disk(small)
+    small.write_bytes(small.read_bytes()[:512])
+    before = small.read_bytes()
+    with boot(qemu_command, small, disk_ready=False) as (console, _):
+        expect_command(console, b"write forbidden.txt no", b"Data disk unavailable.\r\n")
+    expect_equal(small.read_bytes(), before)
+
+
 def main(qemu_command):
     with tempfile.TemporaryDirectory(prefix="dlang-") as directory:
         root = Path(directory)
@@ -1133,6 +1170,7 @@ def main(qemu_command):
         expect_equal(unknown_disk.read_bytes(), unknown_data)
         verify_migration_and_large_files(qemu_command, root)
         verify_volume_layout(qemu_command, root)
+        verify_storage_discovery(qemu_command, root)
 
     print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, v1 migration, persistence, and disk recovery")
 

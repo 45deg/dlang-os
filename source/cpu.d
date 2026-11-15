@@ -1,4 +1,4 @@
-/// x86-64固有の命令。8・16ビットのI/Oポートアクセス、待機、CPUの停止をまとめる。
+/// x86-64固有の命令。8・16・32ビットのI/Oポートアクセス、待機、CPUの停止をまとめる。
 module cpu;
 
 import ldc.llvmasm : __asm;
@@ -62,4 +62,14 @@ ulong readCr3()
 void writeCr3(ulong value)
 {
     __asm("movq $0, %cr3", "r,~{memory}", value);
+}
+
+uint readPortDword(ushort port)
+{
+    return __asm!uint("inl $1, $0", "={eax},{dx},~{memory}", port);
+}
+
+void writePortDword(ushort port, uint value)
+{
+    __asm("outl $0, $1", "{eax},{dx},~{memory}", value, port);
 }

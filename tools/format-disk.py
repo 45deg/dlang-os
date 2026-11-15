@@ -14,7 +14,7 @@ def header(slots=16, file_bytes=16384, records_lba=1, copy_sectors=None):
         copy_sectors = minimum_stride
     if not (1 <= slots <= 0xFFFFFFFF and 1 <= file_bytes <= 65535
             and 1 <= records_lba <= 0xFFFFFFFF and minimum_stride <= copy_sectors <= 0xFFFFFFFF
-            and records_lba + slots * 2 * copy_sectors <= 0x10000000):
+            and records_lba + slots * 2 * copy_sectors <= 0x100000000):
         raise ValueError("Invalid volume layout")
     result = bytearray(SECTOR_BYTES)
     struct.pack_into('<8s9I', result, 0, b'DLANGFS3', 3, SECTOR_BYTES, slots,
