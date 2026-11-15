@@ -6,6 +6,7 @@ import cpu : haltCpu;
 import filesystem : FsResult, FileVersion, errorText, fileLimit, isMounted, isText, maxFileBytes,
     maxNameBytes, nameAt, open, remove, save, validFilename;
 import boot_info : usableMemoryKiB;
+import physical_memory : freeMemoryKiB;
 import process : ProcessInfo, exitedProcesses, faultedProcesses, infoAt, infoFor, processLimit,
     processName, spawn, stop;
 import user_program : Program, programName;
@@ -536,6 +537,9 @@ private void printMemory()
 {
     writeText("Usable memory: ");
     writeUnsigned(usableMemoryKiB());
+    writeText(" KiB" ~ newLine);
+    writeText("Free pages: ");
+    writeUnsigned(freeMemoryKiB());
     writeText(" KiB" ~ newLine);
 }
 

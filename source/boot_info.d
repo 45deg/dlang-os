@@ -12,14 +12,21 @@ struct BootFramebuffer
     ubyte redShift, greenShift, blueShift;
 }
 
+struct MemoryRange
+{
+    ulong physical, pages;
+}
+
 struct BootInfo
 {
     BootFramebuffer framebuffer;
     uint* backBuffer;
     ulong usableKiB;
+    size_t rangeCount;
+    MemoryRange[128] ranges; // 容量超過時はローダーが起動を拒否する。
 }
 
-static assert(BootFramebuffer.sizeof == 24 && BootInfo.sizeof == 40);
+static assert(BootFramebuffer.sizeof == 24 && BootInfo.sizeof <= 4096);
 
 private __gshared BootInfo* bootInfo;
 
@@ -43,4 +50,9 @@ BootFramebuffer bootFramebuffer()
 uint* bootBackBuffer()
 {
     return bootInfo.backBuffer;
+}
+
+MemoryRange[] availableRanges()
+{
+    return bootInfo.ranges[0 .. bootInfo.rangeCount];
 }

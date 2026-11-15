@@ -1,10 +1,11 @@
 /// spawnElfでELFとヒープを配置し、runNextでRing 3プロセスをラウンドロビン実行する。
 module process;
 
-import address_space : AddressSpace, initPaging, initUserSpace, resetUserSpace, mapBuiltin, mapUserHeap, copyFromUser,
+import address_space : AddressSpace, initPaging, initUserSpace, releaseUserSpace, mapBuiltin, mapUserHeap, copyFromUser,
     userCodeAddress, userImageEnd, userStackBase, userStackTop, __user_app_start;
 import apic_timer : initTimer, arm, cancel;
 import cpu : readCr3;
+import physical_memory : initPhysicalMemory;
 import clock : milliseconds;
 import privilege : UserFrame, enterUser, initPrivilege, syscallVector, timerVector, userCode, userData;
 import elf : loadElf;
@@ -54,12 +55,10 @@ nothrow @nogc:
 bool initProcesses()
 {
     initPaging();
+    initPhysicalMemory();
     initPrivilege();
     if (!initTimer())
         return false;
-    foreach (ref space; spaces)
-        if (!initUserSpace(space))
-            return false;
     kernelCr3 = readCr3();
     available = true;
     return true;
@@ -71,11 +70,15 @@ uint spawn(Program program)
     if (slot == processLimit)
         return 0;
 
-    resetUserSpace(spaces[slot]);
+    bool started;
+    scope(exit) if (!started) releaseUserSpace(spaces[slot]);
+    if (!initUserSpace(spaces[slot]))
+        return 0;
     if (!mapBuiltin(spaces[slot]))
         return 0;
 
     const entry = userCodeAddress + (cast(ulong) &userMain - cast(ulong) &__user_app_start);
+    started = true;
     auto task = activate(slot, program, entry);
     task.frame.rdi = cast(ulong) program;
     task.frame.rsi = task.info.pid;
@@ -87,13 +90,17 @@ ElfStart spawnElf(scope const(char)[] name, scope const(char)[] image, out uint 
     const slot = freeSlot();
     if (slot == processLimit)
         return ElfStart.unavailable;
-    resetUserSpace(spaces[slot]);
+    bool started;
+    scope(exit) if (!started) releaseUserSpace(spaces[slot]);
+    if (!initUserSpace(spaces[slot]))
+        return ElfStart.unavailable;
     ulong entry;
     if (!loadElf(spaces[slot], image, entry))
         return ElfStart.invalid;
     if (!mapUserHeap(spaces[slot]))
         return ElfStart.unavailable;
 
+    started = true;
     auto task = activate(slot, Program.elf, entry);
     foreach (i, char c; name)
         task.info.filename[i] = c;
@@ -159,6 +166,7 @@ bool stop(uint pid)
     auto task = find(pid);
     if (task is null)
         return false;
+    releaseUserSpace(spaces[task - processes.ptr]);
     task.info.pid = 0;
     return true;
 }
@@ -218,6 +226,7 @@ void runNext()
 
         if (task.closeDeadline != 0 && milliseconds() >= task.closeDeadline)
         {
+            releaseUserSpace(spaces[slot]);
             task.info.pid = 0;
             continue;
         }
@@ -240,6 +249,8 @@ void runNext()
             ++faultedCount;
             task.info.pid = 0;
         }
+        if (task.info.pid == 0)
+            releaseUserSpace(spaces[slot]);
         return;
     }
 }

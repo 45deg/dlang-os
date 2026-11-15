@@ -67,7 +67,7 @@ def verify_shell(console):
     expect_equal(console.command(b"missing\r"), b"missing\r\nUnknown command: missing\r\n")
 
     memory = console.command(b"mem\r")
-    match = re.fullmatch(rb"mem\r\nUsable memory: ([0-9]+) KiB\r\n", memory)
+    match = re.fullmatch(rb"mem\r\nUsable memory: ([0-9]+) KiB\r\nFree pages: ([0-9]+) KiB\r\n", memory)
     if match is None or not 0 < int(match[1]) <= 128 * 1024:
         raise AssertionError(f"Expected usable memory within the 128 MiB guest; got {memory!r}")
 
@@ -480,13 +480,24 @@ def stop_process(console, pid):
     expect_command(console, f"kill {pid}".encode(), b"Stopped.\r\n")
 
 
+def free_memory(console):
+    response = console.command(b"mem\r")
+    match = re.search(rb"Free pages: ([0-9]+) KiB", response)
+    if match is None:
+        raise AssertionError(f"Missing allocator statistics: {response!r}")
+    return int(match[1])
+
+
 def verify_processes(console):
+    baseline_memory = free_memory(console)
     spin = spawn_process(console, b"spin")
     first = spawn_process(console, b"counter")
     second = spawn_process(console, b"counter")
     exited = spawn_process(console, b"exit")
     faulted = spawn_process(console, b"fault")
 
+    if free_memory(console) >= baseline_memory:
+        raise AssertionError("Live processes did not consume physical pages")
     before, _ = process_list(console)
     after, totals = process_list(console)
     # spinにはsyscallがない。実際のタイマー割り込みと、他の2タスクの進行を同時に確認する。
@@ -503,6 +514,7 @@ def verify_processes(console):
 
     for pid in (spin, first, second):
         stop_process(console, pid)
+    expect_equal(free_memory(console), baseline_memory)
     expect_equal(process_list(console)[0], {})
 
 
@@ -751,6 +763,7 @@ def run_hello(console):
 
 
 def verify_disk_elf(console):
+    baseline_memory = free_memory(console)
     hello = (APP_DIRECTORY / "hello.elf").read_bytes()
     before, totals = process_list(console)
     expect_command(console, b"run missing.elf", b"File not found.\r\n")
@@ -758,10 +771,19 @@ def verify_disk_elf(console):
     expect_command(console, b"run hello.elf", b"Unsupported or invalid ELF executable.\r\n")
     expect_equal(process_list(console), (before, totals))
 
+    # PT_LOADを配置した後で入口の検証に失敗しても、割り当てを回収する。
+    invalid_entry = bytearray(hello)
+    invalid_entry[24:32] = bytes(8)
+    put_file(console, b"hello.elf", invalid_entry)
+    for _ in range(8):
+        expect_command(console, b"run hello.elf", b"Unsupported or invalid ELF executable.\r\n")
+    expect_equal(free_memory(console), baseline_memory)
+
     put_file(console, b"hello.elf", hello)
     run_hello(console)
     run_hello(console)  # 前回書いたBSSが再利用時に残らない。
     expect_equal(process_list(console), (before, (totals[0] + 2, totals[1])))
+    expect_equal(free_memory(console), baseline_memory)
 
 
 def verify_d_initialization(console):
@@ -936,11 +958,13 @@ def main(qemu_command):
         experiments = root / "experiments.img"
         experiments.write_bytes(b"DLANGFS2" + bytes(1024 * 1024 - 8))
         with boot(qemu_command, experiments) as (console, _):
+            baseline_memory = free_memory(console)
             verify_d_initialization(console)
             verify_d_heap(console)
             verify_d_exceptions(console)
             verify_d_arrays(console)
             verify_phobos(console)
+            expect_equal(free_memory(console), baseline_memory)
 
         # ディスクを差し直し、GUIの保存とシェルの削除が残ることを確認する。
         with boot(qemu_command, disk, with_qmp=True) as (console, qmp):

@@ -2,6 +2,7 @@
 module address_space;
 
 import boot_info : directMapOffset;
+import physical_memory : allocatePage, freePage;
 import cpu : readCr3, writeCr3;
 import user_abi : userHeapBase, userHeapBytes;
 
@@ -19,6 +20,7 @@ static assert(userHeapBase >= userStackTop + pageBytes && userHeapBase % pageByt
 static assert(userHeapBytes % pageBytes == 0 && heapIndex + heapPages <= 512);
 private enum ulong apicAddress = 0xffff_c000_0000_0000;
 private enum ulong physicalMask = 0x000f_ffff_ffff_f000;
+private enum ulong owned = 1 << 9; // OS用ビット。共有コードは回収しない。
 private enum ulong present = 1;
 private enum ulong writable = 2;
 private enum ulong user = 4;
@@ -35,10 +37,7 @@ static assert(Page.sizeof == pageBytes && Page.alignof == pageBytes);
 
 struct AddressSpace
 {
-    private Page root, pdpt, directory, table, stack;
-    private Page[userImagePages] image;
-    private Page[heapPages] heap;
-    private ulong stackPhysical;
+    private Page* root, pdpt, directory, table;
     ulong cr3;
 }
 
@@ -60,13 +59,22 @@ void initPaging()
 
 bool initUserSpace(ref AddressSpace space)
 {
-    const root = physicalAddress(cast(ulong) &space.root);
-    const pdpt = physicalAddress(cast(ulong) &space.pdpt);
-    const directory = physicalAddress(cast(ulong) &space.directory);
-    const table = physicalAddress(cast(ulong) &space.table);
-    const stack = physicalAddress(cast(ulong) &space.stack);
-    if (root == 0 || pdpt == 0 || directory == 0 || table == 0 || stack == 0)
-        return false;
+    const root = allocatePage();
+    if (root == 0) return false;
+    space.root = directPage(root);
+    space.cr3 = root;
+    const pdpt = allocatePage();
+    if (pdpt == 0) return false;
+    space.pdpt = directPage(pdpt);
+    const directory = allocatePage();
+    if (directory == 0) return false;
+    space.directory = directPage(directory);
+    const table = allocatePage();
+    if (table == 0) return false;
+    space.table = directPage(table);
+    const stack = allocatePage();
+    if (stack == 0) return false;
+    space.table.words[stackIndex] = stack | owned | present | user | writable | noExecute;
 
     // 上位側は共有し、プロセスからアクセスできるページは下位側にだけ割り当てる。
     foreach (i; 256 .. 512)
@@ -75,16 +83,21 @@ bool initUserSpace(ref AddressSpace space)
     space.root.words[0] = pdpt | walkFlags;
     space.pdpt.words[0] = directory | walkFlags;
     space.directory.words[2] = table | walkFlags;
-    space.stackPhysical = stack;
     space.cr3 = root;
     return true;
 }
 
-void resetUserSpace(ref AddressSpace space)
+/// カーネルのCR3に戻ってから、部分的な初期化も含めて所有ページを回収する。
+void releaseUserSpace(ref AddressSpace space)
 {
-    space.table.words[] = 0;
-    space.stack.words[] = 0;
-    space.table.words[stackIndex] = space.stackPhysical | present | user | writable | noExecute;
+    if (space.table !is null)
+        foreach (entry; space.table.words)
+            if (entry & owned)
+                freePage(entry & physicalMask);
+    foreach (page; [space.table, space.directory, space.pdpt, space.root])
+        if (page !is null)
+            freePage(cast(ulong) page - directMapOffset);
+    space = AddressSpace.init;
 }
 
 bool mapBuiltin(ref AddressSpace space)
@@ -98,13 +111,12 @@ bool mapBuiltin(ref AddressSpace space)
 
 bool mapUserHeap(ref AddressSpace space)
 {
-    foreach (i, ref page; space.heap)
+    foreach (i; 0 .. heapPages)
     {
-        const physical = physicalAddress(cast(ulong) &page);
+        const physical = allocatePage();
         if (physical == 0)
             return false;
-        page.words[] = 0;
-        space.table.words[heapIndex + i] = physical | present | writable | user | noExecute;
+        space.table.words[heapIndex + i] = physical | owned | present | writable | user | noExecute;
     }
     return true;
 }
@@ -125,17 +137,15 @@ bool mapImage(ref AddressSpace space, ulong address, ulong memorySize,
         const index = first + i;
         if (space.table.words[index] != 0)
             return false;
-        auto page = &space.image[index];
-        const physical = physicalAddress(cast(ulong) page);
+        const physical = allocatePage();
         if (physical == 0)
             return false;
-        page.words[] = 0; // ゼロ初期化領域と、前のプロセスが残したデータの両方を消す。
-        auto bytes = cast(char*) page;
+        auto bytes = cast(char*) directPage(physical);
         const offset = i * pageBytes;
         if (offset < data.length)
             foreach (j; offset .. (data.length < offset + pageBytes ? data.length : offset + pageBytes))
                 bytes[j - offset] = data[j];
-        space.table.words[index] = physical | flags;
+        space.table.words[index] = physical | owned | flags;
     }
     return true;
 }

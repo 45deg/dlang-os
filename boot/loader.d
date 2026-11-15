@@ -2,7 +2,7 @@
 /// finishBootは最終メモリマップを取得し、UEFIを終了してカーネルへ渡す。
 module loader;
 
-import boot_info : BootFramebuffer, BootInfo, bootPhysicalLimit, directMapOffset;
+import boot_info : BootFramebuffer, BootInfo, MemoryRange, bootPhysicalLimit, directMapOffset;
 import boot_paging;
 import cpu : haltCpu;
 import kernel_image : KernelImage, maxKernelBytes;
@@ -189,6 +189,7 @@ private struct Handoff
     ulong arenaPhysical, arenaPages;
     ulong root, stackTop, entry;
     BootInfo* info;
+    BootPages remaining;
 }
 
 private Status prepareKernel(BootServices* services, const(LoadedImage)* loaded,
@@ -202,7 +203,10 @@ private Status prepareKernel(BootServices* services, const(LoadedImage)* loaded,
     // 各範囲の境界跨ぎと上位テーブル用にページを追加する。
     const dataBytes = kernel.memoryBytes + stackBytes + pageBytes + roundToPage(display.backBufferBytes());
     const loaderBytes = roundToPage(loaded.imageSize);
-    const tablePages = 32 + (dataBytes + kernel.memoryBytes + display.bytes + loaderBytes) / pageTableCoverage;
+    ulong freeTablePages;
+    if (!estimateFreeTables(services, freeTablePages))
+        return loadError;
+    const tablePages = freeTablePages + 32 + (dataBytes + kernel.memoryBytes + display.bytes + loaderBytes) / pageTableCoverage;
     const arenaPages = dataBytes / pageBytes + tablePages;
     ulong arena = bootPhysicalLimit - 1;
     const status = services.allocatePages(allocateMaxAddress, loaderData, arenaPages, &arena);
@@ -237,7 +241,7 @@ private Status prepareKernel(BootServices* services, const(LoadedImage)* loaded,
         return loadError;
     }
 
-    handoff = Handoff(arena, arenaPages, tables.root, directMapOffset + stackPhysical + stackBytes, kernel.entry, info);
+    handoff = Handoff(arena, arenaPages, tables.root, directMapOffset + stackPhysical + stackBytes, kernel.entry, info, pages);
     return success;
 }
 
@@ -280,12 +284,27 @@ private Status finishBoot(BootServices* services, Handle handle, ref Handoff han
             return loadError;
 
         ulong usableKiB;
+        handoff.info.rangeCount = 0;
+        auto tables = PageTables(handoff.root, handoff.remaining);
         const entries = cast(const(ubyte)*) map;
         for (size_t offset = 0; offset < required; offset += descriptorBytes)
         {
             const descriptor = cast(const(MemoryDescriptor)*) (entries + offset);
-            if (descriptor.type == conventionalMemory)
-                usableKiB += descriptor.pageCount * (pageBytes / 1024);
+            if (descriptor.type == conventionalMemory && descriptor.pageCount != 0)
+            {
+                const base = descriptor.physicalStart == 0 ? pageBytes : descriptor.physicalStart;
+                const count = descriptor.pageCount - (descriptor.physicalStart == 0 ? 1 : 0);
+                if (count == 0)
+                    continue;
+                if (base >= bootPhysicalLimit || count > (bootPhysicalLimit - base) / pageBytes
+                    || handoff.info.rangeCount == handoff.info.ranges.length)
+                    return loadError;
+                if (!tables.map(directMapOffset + base, base, count * pageBytes,
+                                pageWritable | pageNoExecute, true))
+                    return loadError;
+                handoff.info.ranges[handoff.info.rangeCount++] = MemoryRange(base, count);
+                usableKiB += count * (pageBytes / 1024);
+            }
         }
         handoff.info.usableKiB = usableKiB;
 
@@ -309,4 +328,29 @@ private Status fail(scope const(char)[] message, Status status) nothrow @nogc
     writeText(message);
     writeText("\r\n");
     return status;
+}
+
+/// 最終マップを構築するテーブル用領域を、現在の空きRAM量から見積もる。
+private bool estimateFreeTables(BootServices* services, out ulong pages) nothrow @nogc
+{
+    size_t bytes, key, stride;
+    uint versionNumber;
+    if (services.getMemoryMap(&bytes, null, &key, &stride, &versionNumber) != bufferTooSmall)
+        return false;
+    bytes += 4096;
+    void* buffer;
+    if (services.allocatePool(loaderData, bytes, &buffer) != success)
+        return false;
+    scope(exit) services.freePool(buffer);
+    if (services.getMemoryMap(&bytes, buffer, &key, &stride, &versionNumber) != success
+        || stride < MemoryDescriptor.sizeof || bytes % stride != 0)
+        return false;
+    pages = 128; // 後続のUEFI確保と再試行による領域分割にも余裕を持たせる。
+    for (size_t offset; offset < bytes; offset += stride)
+    {
+        const entry = cast(const(MemoryDescriptor)*) (cast(ubyte*) buffer + offset);
+        if (entry.type == conventionalMemory)
+            pages += entry.pageCount / 512 + entry.pageCount / (512 * 512) + 4;
+    }
+    return true;
 }

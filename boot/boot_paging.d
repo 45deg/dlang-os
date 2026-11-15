@@ -42,8 +42,14 @@ struct PageTables
         root = pages.take(pageBytes);
     }
 
+    this(ulong existingRoot, ref BootPages pool) nothrow @nogc
+    {
+        root = existingRoot;
+        pages = &pool;
+    }
+
     /// 仮想アドレスと物理アドレスはページ境界に揃える。既存エントリには上書きしない。
-    bool map(ulong address, ulong physical, ulong bytes, ulong flags) nothrow @nogc
+    bool map(ulong address, ulong physical, ulong bytes, ulong flags, bool allowIdentical = false) nothrow @nogc
     {
         if (root == 0)
             return false;
@@ -66,7 +72,11 @@ struct PageTables
 
             auto leaf = &table[(virtualPage >> 12) & 511];
             if (*leaf != 0)
+            {
+                if (allowIdentical && *leaf == ((physical + offset) | pagePresent | flags))
+                    continue;
                 return false;
+            }
             *leaf = (physical + offset) | pagePresent | flags;
         }
         return true;
