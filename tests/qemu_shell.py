@@ -1075,6 +1075,46 @@ def verify_volume_layout(qemu_command, root):
         expect_equal(invalid.read_bytes(), image)
 
 
+def verify_close_deadline(qemu_command, root):
+    disk = root / "close-deadline.img"
+    format_disk(disk)
+    with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
+        baseline = free_memory(console)
+        put_file(console, b"gui_close.elf", (APP_DIRECTORY / "gui_close.elf").read_bytes())
+        console.command(b"run gui_close.elf &\r")
+        running, _ = wait_process_names(console, b"gui_close.elf")
+        pid = next(iter(running))
+
+        def wait_value(value):
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline:
+                tasks, _ = process_list(console)
+                if pid not in tasks:
+                    raise AssertionError(f"GUI was killed before publishing {value}")
+                if tasks[pid][1] == value:
+                    return
+                time.sleep(0.02)
+            raise AssertionError(f"GUI did not publish {value}: {tasks}")
+
+        wait_value(1)
+        qmp.keys("f10")
+        wait_value(3)  # ゲスト内で1500 ms待ち、1000 msの期限を越えたことを確認する。
+        qmp.keys("ret")
+        wait_value(4)
+        qmp.keys("f10")
+        deadline = time.monotonic() + 6
+        while True:
+            tasks, _ = process_list(console)
+            if pid not in tasks:
+                break
+            if tasks[pid][1] == 5:
+                raise AssertionError("Clean unresponsive GUI survived its close deadline")
+            if time.monotonic() >= deadline:
+                raise AssertionError("Clean unresponsive GUI was not reaped")
+            time.sleep(0.02)
+        expect_equal(free_memory(console), baseline)
+
+
 def verify_app_catalog(qemu_command, root):
     disk = root / "catalog.img"
     format_disk(disk)
@@ -1283,6 +1323,7 @@ def main(qemu_command):
         verify_storage_discovery(qemu_command, root)
         verify_external_gui(qemu_command, root)
         verify_app_catalog(qemu_command, root)
+        verify_close_deadline(qemu_command, root)
 
     print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, v1 migration, persistence, and disk recovery")
 

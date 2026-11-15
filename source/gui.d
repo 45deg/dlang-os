@@ -8,7 +8,7 @@ import file_api : FsResult, FileVersion, validFilename, maxNameBytes;
 import filesystem : generation, isMounted, nameAt, open, save;
 import graphics : Rect, Screen;
 import gui_abi;
-import process : exitedProcesses, faultedProcesses, infoAt, processLimit, processName;
+import process : cancelCloseDeadline, exitedProcesses, faultedProcesses, infoAt, processLimit, processName;
 import user_abi : Call, callError;
 
 private struct GuiWindow
@@ -256,6 +256,8 @@ private ulong present(ref GuiWindow window, ref const AddressSpace space, ulong 
         return callError;
 
     window.frame = incoming;
+    if (incoming.dirty)
+        cancelCloseDeadline(window.pid);
     window.changed = true;
     return 0;
 }

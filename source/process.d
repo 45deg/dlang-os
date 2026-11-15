@@ -184,6 +184,14 @@ void requestClose(uint pid)
         task.closeDeadline = milliseconds() + 1000;
 }
 
+/// 終了通知より後に未保存状態が届いた場合は、確認前の強制終了を取り消す。
+void cancelCloseDeadline(uint pid)
+{
+    auto task = find(pid);
+    if (task !is null)
+        task.closeDeadline = 0;
+}
+
 bool infoFor(uint pid, out ProcessInfo info)
 {
     const task = find(pid);
