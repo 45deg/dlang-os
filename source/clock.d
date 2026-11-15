@@ -1,6 +1,9 @@
-/// initClockはPIT channel 2でTSCを校正する。millisecondsは起動後の経過時間を返す。
+/// initClockはPITでTSCを校正する。millisecondsは経過時間、currentDateTimeはRTC基準の暦を返す。
 /// 現在の単一CPU向け。校正後のTSC周波数が一定であることを前提とする。
 module clock;
+
+import boot_info : bootDateTime, bootDateTimeValid, bootDateTimeTicks;
+import calendar : DateTime, advance;
 
 import cpu : readPort, writePort, ticks;
 
@@ -37,4 +40,12 @@ ulong milliseconds()
 {
     const elapsed = ticks() - epoch;
     return elapsed / ticksPerSecond * 1000 + elapsed % ticksPerSecond * 1000 / ticksPerSecond;
+}
+
+/// 起動前にRTCから読んだ暦へ、同じTSCで測った経過秒を加える。
+bool currentDateTime(out DateTime time)
+{
+    if (!bootDateTimeValid() || ticksPerSecond == 0) return false;
+    time = bootDateTime();
+    return advance(time, (ticks() - bootDateTimeTicks()) / ticksPerSecond);
 }

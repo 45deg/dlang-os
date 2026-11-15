@@ -18,7 +18,7 @@ ESP := build/uefi-esp
 KERNEL := $(ESP)/kernel.elf
 BOOT_EFI := $(ESP)/EFI/BOOT/BOOTX64.EFI
 SOURCES := $(wildcard source/*.d)
-EFI_SOURCES := $(wildcard boot/*.d) source/boot_info.d source/cpu.d source/runtime.d source/serial.d
+EFI_SOURCES := $(wildcard boot/*.d) source/boot_info.d source/calendar.d source/cpu.d source/runtime.d source/serial.d
 EFI_D_FLAGS := -mtriple=x86_64-pc-windows-msvc -betterC -O2 -checkaction=halt -Iboot -Isource
 FONT_ATLASES := $(wildcard assets/fonts/*.coverage)
 FONT_LICENSE := assets/fonts/OFL.txt
@@ -162,5 +162,10 @@ run: check-ovmf all $(DATA_DISK)
 run-gui: check-ovmf all $(DATA_DISK)
 	"$(QEMU)" $(QEMU_FLAGS) $(DATA_DRIVE) $(if $(strip $(QEMU_DISPLAY)),-display "$(QEMU_DISPLAY)")
 
-test: check-ovmf all apps
+build/tests/calendar-test: tests/calendar_test.d source/calendar.d Makefile
+	mkdir -p "$(@D)"
+	"$(LDC)" -betterC -checkaction=halt -Isource -of="$@" tests/calendar_test.d source/calendar.d
+
+test: check-ovmf all apps build/tests/calendar-test
+	build/tests/calendar-test
 	"$(PYTHON)" tests/qemu_shell.py "$(QEMU)" $(QEMU_FLAGS) -display none

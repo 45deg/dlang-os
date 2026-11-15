@@ -1,5 +1,7 @@
-/// UEFIローダーとカーネルで起動情報の配置を共有する。initBootInfoで受け取り、各機能に公開する。
+/// UEFIローダーとカーネルで画面・メモリ・RTCの起動情報を共有する。initBootInfoで受け取る。
 module boot_info;
+
+import calendar : DateTime;
 
 // 起動時に確保した物理ページを上位にマップする。ユーザープロセスでも同じ位置を使う。
 enum ulong directMapOffset = 0xffff_8000_0000_0000;
@@ -21,6 +23,9 @@ struct BootInfo
 {
     BootFramebuffer framebuffer;
     uint* backBuffer;
+    DateTime rtc;
+    bool rtcValid;
+    ulong rtcTicks;
     ulong usableKiB;
     size_t rangeCount;
     MemoryRange[128] ranges; // 容量超過時はローダーが起動を拒否する。
@@ -56,3 +61,7 @@ MemoryRange[] availableRanges()
 {
     return bootInfo.ranges[0 .. bootInfo.rangeCount];
 }
+
+DateTime bootDateTime() nothrow @nogc { return bootInfo.rtc; }
+bool bootDateTimeValid() nothrow @nogc { return bootInfo.rtcValid; }
+ulong bootDateTimeTicks() nothrow @nogc { return bootInfo.rtcTicks; }

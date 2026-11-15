@@ -1,6 +1,9 @@
-/// efiMainはESPのカーネルを読み、GOPとページテーブルを準備する。
+/// efiMainはESPのカーネルを読み、GOP・ページテーブル・GetTimeによるRTCスナップショットを準備する。
 /// finishBootは最終メモリマップを取得し、UEFIを終了してカーネルへ渡す。
 module loader;
+
+import calendar : DateTime, validate;
+import cpu : ticks;
 
 import boot_info : BootFramebuffer, BootInfo, MemoryRange, bootPhysicalLimit, directMapOffset;
 import boot_paging;
@@ -49,6 +52,16 @@ extern(C) Status efiMain(Handle handle, SystemTable* system) nothrow @nogc
     if (status != success)
         return fail("Cannot prepare the kernel image or page tables.", status);
 
+    // RTCへのアクセスはファームウェアに任せ、ExitBootServicesより前に一度だけ読む。
+    Time time;
+    if (system.runtimeServices !is null && system.runtimeServices.getTime !is null
+        && system.runtimeServices.getTime(&time, null) == success)
+    {
+        const date = DateTime(time.year, time.month, time.day, time.hour, time.minute, time.second);
+        handoff.info.rtc = date;
+        handoff.info.rtcValid = validate(date);
+        handoff.info.rtcTicks = ticks();
+    }
     bool exitAttempted;
     status = finishBoot(services, handle, handoff, exitAttempted);
     if (exitAttempted)

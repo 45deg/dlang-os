@@ -1075,6 +1075,28 @@ def verify_volume_layout(qemu_command, root):
         expect_equal(invalid.read_bytes(), image)
 
 
+def verify_desktop_clock(qemu_command, root):
+    disk = root / "rtc.img"
+    format_disk(disk)
+    command = [*qemu_command, "-rtc", "base=2024-02-29T12:34:00,clock=vm"]
+    with boot(command, disk, with_qmp=True) as (console, qmp):
+        screen = root / "rtc.ppm"
+        background, foreground = bytes.fromhex("152843"), bytes.fromhex("ffffff")
+        expect_text(qmp, screen, 660, 567, "2024-02-29", 1, background, foreground)
+        expect_text(qmp, screen, 660, 583, "12:34:", 1, background, foreground)
+        expect_text(qmp, screen, 732, 583, "RTC", 1, background, foreground)
+        # 入力なしのアイドル状態でも秒の表示が変わる。
+        def seconds_pixels(width, data):
+            return b"".join(data[((583 + row) * width + 708) * 3:
+                                 ((583 + row) * width + 724) * 3] for row in range(14))
+        before = qmp.capture(screen).split(b"\n", 3)
+        width = int(before[1].split()[0])
+        old = seconds_pixels(width, before[3])
+        qmp.wait_screen(screen, "clock advances while idle",
+                        lambda width, height, data: seconds_pixels(width, data) != old)
+        expect_command(console, b"echo clock", b"clock\r\n")
+
+
 def verify_close_deadline(qemu_command, root):
     disk = root / "close-deadline.img"
     format_disk(disk)
@@ -1324,6 +1346,7 @@ def main(qemu_command):
         verify_external_gui(qemu_command, root)
         verify_app_catalog(qemu_command, root)
         verify_close_deadline(qemu_command, root)
+        verify_desktop_clock(qemu_command, root)
 
     print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, v1 migration, persistence, and disk recovery")
 

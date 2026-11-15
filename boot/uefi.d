@@ -43,9 +43,25 @@ extern(C)
         TableHeader header;
         const(wchar)* firmwareVendor;
         uint firmwareRevision;
-        void*[7] consoleAndRuntime;
+        void*[6] console;
+        RuntimeServices* runtimeServices;
         BootServices* bootServices;
     }
+
+    struct Time
+    {
+        ushort year;
+        ubyte month, day, hour, minute, second, pad1;
+        uint nanosecond;
+        short timezone;
+        ubyte daylight, pad2;
+    }
+    struct RuntimeServices
+    {
+        TableHeader header;
+        Status function(Time*, void*) nothrow @nogc getTime;
+    }
+    static assert(Time.sizeof == 16 && SystemTable.runtimeServices.offsetof == 88);
 
     struct BootServices
     {

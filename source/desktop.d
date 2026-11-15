@@ -2,6 +2,9 @@
 /// launchでアプリを起動し、syncAppWindowsで終了やファイルを開く要求を反映する。
 module desktop;
 
+import calendar : DateTime, format;
+import clock : currentDateTime, milliseconds;
+
 import application : launchDesktopApp;
 import app_registry : registration, documentApp, externalApp;
 import app_catalog : loadCatalog;
@@ -35,6 +38,7 @@ struct Desktop
     private Ps2 devices;
     private Pointer pointer;
     private bool active;
+    private ulong clockSecond;
     private bool menuOpen;
     private size_t menuSelection;
     private const(char)[] notice;
@@ -75,7 +79,10 @@ struct Desktop
             return;
 
         const event = devices.poll();
-        const windowsChanged = syncAppWindows();
+        const second = milliseconds() / 1000;
+        const clockChanged = second != clockSecond;
+        clockSecond = second;
+        const windowsChanged = syncAppWindows() || clockChanged;
 
         if (event.kind == InputKind.keyboard)
         {
@@ -518,7 +525,7 @@ struct Desktop
 
     private Rect taskButton(int index) const
     {
-        const spacing = minimum(100, (screen.width - 163) / windowLimit);
+        const spacing = minimum(100, (screen.width - 230) / windowLimit);
         return Rect(78 + index * spacing, screen.height - taskbarHeight + 6, spacing - 4, 24);
     }
 
@@ -582,7 +589,17 @@ struct Desktop
                 window.minimized ? muted : 0xa6d6d0);
             centeredText(screen, rect, windowTitle(slot), paper);
         }
-        labelWithin(screen, Rect(screen.width - 76, top, 76, taskbarHeight), "Dlang OS", paper);
+        DateTime time;
+        if (currentDateTime(time))
+        {
+            char[10] date;
+            char[12] clock;
+            format(time, date, clock);
+            screen.text(screen.width - 140, top + 3, date[], paper);
+            screen.text(screen.width - 140, top + 19, clock[], paper);
+        }
+        else
+            labelWithin(screen, Rect(screen.width - 140, top, 140, taskbarHeight), "RTC unavailable", paper);
     }
 
     private void drawMenu()
