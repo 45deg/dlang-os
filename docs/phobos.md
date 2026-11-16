@@ -1,4 +1,4 @@
-# 上流Phobosのwriteln
+# Hello,world実装
 
 上流の `std.stdio.writeln` で、次のプログラムをQEMUのシリアルへ出力できます。
 
