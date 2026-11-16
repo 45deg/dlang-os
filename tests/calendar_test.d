@@ -21,8 +21,8 @@ extern(C) int main() nothrow @nogc
     time = DateTime(9999, 12, 31, 23, 59, 59);
     assert(!advance(time, 1));
     char[10] date;
-    char[12] clock;
+    char[8] clock;
     format(DateTime(2024, 2, 29, 3, 4, 5), date, clock);
-    assert(date[] == "2024-02-29" && clock[] == "03:04:05 RTC");
+    assert(date[] == "2024-02-29" && clock[] == "03:04:05");
     return 0;
 }

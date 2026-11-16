@@ -1084,7 +1084,7 @@ def verify_desktop_clock(qemu_command, root):
         background, foreground = bytes.fromhex("152843"), bytes.fromhex("ffffff")
         expect_text(qmp, screen, 660, 567, "2024-02-29", 1, background, foreground)
         expect_text(qmp, screen, 660, 583, "12:34:", 1, background, foreground)
-        expect_text(qmp, screen, 732, 583, "RTC", 1, background, foreground)
+        expect_text(qmp, screen, 724, 583, "    ", 1, background, foreground)
         # 入力なしのアイドル状態でも秒の表示が変わる。
         def seconds_pixels(width, data):
             return b"".join(data[((583 + row) * width + 708) * 3:

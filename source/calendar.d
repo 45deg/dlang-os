@@ -54,10 +54,10 @@ void digits(char[] target, uint value)
     }
 }
 
-void format(DateTime time, ref char[10] date, ref char[12] clock)
+void format(DateTime time, ref char[10] date, ref char[8] clock)
 {
     foreach (i, c; "0000-00-00") date[i] = c;
-    foreach (i, c; "00:00:00 RTC") clock[i] = c;
+    foreach (i, c; "00:00:00") clock[i] = c;
     digits(date[0 .. 4], time.year);
     digits(date[5 .. 7], time.month);
     digits(date[8 .. 10], time.day);

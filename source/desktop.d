@@ -593,7 +593,7 @@ struct Desktop
         if (currentDateTime(time))
         {
             char[10] date;
-            char[12] clock;
+            char[8] clock;
             format(time, date, clock);
             screen.text(screen.width - 140, top + 3, date[], paper);
             screen.text(screen.width - 140, top + 19, clock[], paper);
