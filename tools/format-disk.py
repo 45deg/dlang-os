@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""新規DlangFS3イメージを作る。既存ファイルは上書きせず、配置情報をヘッダに記録する。"""
+"""Create a DlangFS3 image with layout information in its header. Leave existing files intact."""
 
 import argparse
 from pathlib import Path

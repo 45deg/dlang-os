@@ -1,15 +1,15 @@
-# UEFIローダーとカーネルをESPに置く。appsターゲットはアプリのELFをビルドする。
-# runとrun-guiは別のデータディスクを接続し、testは使い捨てのディスクを使う。
+# Place the UEFI loader and kernel on the ESP. The apps target builds the application ELFs.
+# Attach a separate data disk for run and run-gui. Use a disposable disk for test.
 LDC ?= $(firstword $(wildcard build/tools/ldc2-1.43.0-*/bin/ldc2) ldc2)
 PHOBOS_IMPORT ?= $(abspath $(dir $(realpath $(shell command -v "$(LDC)")))/../import)
 QEMU ?= qemu-system-x86_64
 PYTHON ?= python3
-# PATHのLLDを優先し、なければインストール済みのRust同梱LLDを使う。
+# Prefer LLD on PATH, then fall back to the LLD bundled with an installed Rust toolchain.
 LLD_LINK ?= $(or $(shell command -v lld-link),$(firstword $(wildcard $(shell rustc --print target-libdir 2>/dev/null)/../bin/gcc-ld/lld-link)),lld-link)
 DATA_DISK ?= build/data.img
 OVMF_CODE ?= $(firstword $(wildcard /opt/homebrew/share/qemu/edk2-x86_64-code.fd /usr/local/share/qemu/edk2-x86_64-code.fd /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.4m.fd))
 
-# Retinaでもゲスト画面をウィンドウの大きさに合わせて拡大する。
+# Scale the guest display to fit the window, including on Retina displays.
 ifeq ($(shell uname -s),Darwin)
 QEMU_DISPLAY ?= cocoa,zoom-to-fit=on
 endif
@@ -60,7 +60,7 @@ INSTALL_QEMU = -- "$(QEMU)" $(QEMU_FLAGS) -display none
 all: $(KERNEL) $(BOOT_EFI) $(ESP)/FONT-LICENSE.txt
 apps: $(APP_ELFS)
 
-# LDCの登録リストで依存元が先に来るように渡し、起動時の依存順を検証する。
+# Pass the dependent module first in LDC's registration list to test initialization order.
 build/apps/d_init.elf: apps/experiments/d_init.d apps/experiments/d_init_dependency.d
 build/apps/d_heap.elf: apps/experiments/d_heap.d
 build/apps/d_exception.elf: apps/experiments/d_exception.d
@@ -77,15 +77,15 @@ $(D_APP_ELFS): $(D_APP_RUNTIME) $(D_APP_UNWIND) apps/app.ld Makefile
 		$(filter-out $(D_APP_RUNTIME),$(filter %.d,$^)) $(D_APP_RUNTIME) $(filter %.o,$^)
 	@test "$$(wc -c < "$@")" -le 16384 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
 
-# LDC同梱のPhobosソースを、アプリと同じターゲットのELFオブジェクトにする。
-# SHAの展開済みコードを含めてもDlangFSの16 KiBに収まるよう、SHAはサイズ優先にする。
+# Compile the Phobos sources bundled with LDC into ELF objects for the application target.
+# Optimize SHA for size so the unrolled implementation fits within DlangFS's 16 KiB limit.
 build/apps/phobos/digest/sha.o: FULL_D_FLAGS := $(filter-out -O2,$(FULL_D_FLAGS)) -Os
 
 build/apps/phobos/%.o: $(PHOBOS_IMPORT)/std/%.d apps/runtime/object.d apps/runtime/d_allocation.d Makefile
 	mkdir -p "$(@D)"
 	"$(LDC)" $(FULL_D_FLAGS) -I"$(PHOBOS_IMPORT)" -c -of="$@" "$<"
 
-# LLVMの最適化でアプリの例外エッジが消えないよう、アンワインダーを別オブジェクトにする。
+# Build the unwinder separately so LLVM optimization preserves the application's exception edges.
 $(D_APP_UNWIND): apps/runtime/d_unwind.d $(D_APP_RUNTIME) Makefile
 	mkdir -p "$(@D)"
 	"$(LDC)" $(FULL_D_FLAGS) -fno-moduleinfo -c -of="$@" "$<"
@@ -110,7 +110,7 @@ build/apps/monitor.elf: apps/builtin/monitor.d
 build/apps/files.elf: GUI_VERSION := FilesApp
 build/apps/files.elf: apps/builtin/file_browser.d
 build/apps/editor.elf: GUI_VERSION := EditorApp
-# EditorのELFをDlangFSの16 KiBに収める。
+# Keep the Editor ELF within DlangFS's 16 KiB limit.
 build/apps/editor.elf: APP_D_FLAGS := $(filter-out -O2,$(APP_D_FLAGS)) -Oz
 build/apps/editor.elf: apps/builtin/editor.d
 
@@ -145,7 +145,7 @@ check-ovmf:
 	@test -n "$(OVMF_CODE)" && test -r "$(OVMF_CODE)" || { \
 		echo "Pass OVMF_CODE=/path/to/x86_64/OVMF_CODE.fd." >&2; exit 1; }
 
-# 新規ディスクだけ初期化し、ELFを配置してから公開する。
+# Initialize only new disks and publish each image after installing the ELFs.
 $(DATA_DISK): | check-ovmf all $(GUI_APP_ELFS) tools/install-apps.py tools/format-disk.py
 	mkdir -p "$(@D)"
 	@set -eu; temp=$$(mktemp -d "$@.XXXXXX"); trap 'rm -f "$$temp/data.img"; rmdir "$$temp"' 0; \

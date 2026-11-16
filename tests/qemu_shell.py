@@ -1,5 +1,5 @@
-"""QEMUを起動し、verify_shellでCOM1、verify_desktopで画面とPS/2入力を確認する。
-使い捨てのディスクで永続化と復旧を試し、Ring 3でのELF起動、Dランタイム、Phobos、ウィンドウ操作も確認する。
+"""Boot QEMU to test COM1 in verify_shell and the screen and PS/2 input in verify_desktop.
+Use disposable disks to test persistence, recovery, Ring 3 ELFs, the D runtime, Phobos, and window controls.
 """
 
 from contextlib import ExitStack, contextmanager
@@ -61,7 +61,7 @@ def verify_shell(console):
         if not re.search(rb"(?:^|\r\n)" + command + rb" +\S", help_output):
             raise AssertionError(f"Help is missing {command!r}: {help_output!r}")
 
-    # 直前のCRに続くLFは改行として数えず、DELと矢印キーはコマンド文字列に残さない。
+    # An LF immediately after CR does not add another newline. DEL and arrow keys stay out of command text.
     expect_equal(console.command(b"\necho helx\x7fl\x1b[Do\r"), b"echo helx\b \blo\r\nhello\r\n")
     expect_equal(console.command(b"uname\n"), b"uname\r\nDlang OS x86_64\r\n")
     expect_equal(console.command(b"missing\r"), b"missing\r\nUnknown command: missing\r\n")
@@ -71,7 +71,7 @@ def verify_shell(console):
     if match is None or not 0 < int(match[1]) <= 128 * 1024:
         raise AssertionError(f"Expected usable memory within the 128 MiB guest; got {memory!r}")
 
-    # 末尾に収まる127バイトは実行し、1バイト超えた行は先頭のechoも実行しない。
+    # A 127-byte line runs. A line one byte longer must never execute its leading echo.
     argument = b"a" * 122
     full_line = b"echo " + argument
     expect_equal(console.command(full_line + b"\r"), full_line + b"\r\n" + argument + b"\r\n")
@@ -85,7 +85,7 @@ def verify_shell(console):
 def verify_halt(console):
     console.send(b"halt\r")
     expect_equal(console.read_until(b"CPU halted.\r\n"), b"halt\r\n")
-    # 停止メッセージを出した後、シェルへ戻らないことを確認する。
+    # After reporting that it halted, the guest must not return to the shell.
     console.send(b"echo still-running\r")
     if console.pending or select.select([console.output], [], [], 0.5)[0]:
         raise AssertionError("QEMU produced more output after halt")
@@ -120,7 +120,7 @@ class Qmp:
     def keys(self, *codes):
         for code in codes:
             self.chord(code)
-            # 短いPS/2の受信キューに一度にスキャンコードを詰め込まない。
+            # Avoid filling the small PS/2 receive queue with scan codes all at once.
             time.sleep(0.015)
 
     def chord(self, *codes):
@@ -136,7 +136,7 @@ class Qmp:
         self.pointer = x, y
 
     def move(self, dx, dy):
-        # PS/2の1パケットに収まる移動量で送信する。
+        # Break motion into deltas that fit in one PS/2 packet each.
         while dx or dy:
             step_x = max(-100, min(100, dx))
             step_y = max(-100, min(100, dy))
@@ -198,7 +198,7 @@ def pixel(data, width, x, y):
     return data[offset:offset + 3]
 
 
-# 文字列の期待値は各テストに直接書き、字形の画素は同梱データから組み立てる。
+# Spell out expected strings in each test and build the glyph pixels from the bundled data.
 FONT_DIRECTORY = Path(__file__).resolve().parents[1] / "assets" / "fonts"
 PROJECT = Path(__file__).resolve().parents[1]
 APP_DIRECTORY = PROJECT / "build" / "apps"
@@ -296,7 +296,7 @@ def verify_desktop(console, qmp, image_path):
     qmp.until_pixel(image_path, 22, 24, bytes.fromhex("213d54"))
     qmp.until_pixel(image_path, 10, 572, accent)
 
-    # ポインタだけが動くとき、元の場所も含め画面が完全に復元される。
+    # Moving only the pointer leaves every other pixel intact and restores the old pointer area.
     original = qmp.capture(image_path)
     qmp.move_to(123, 41)
     qmp.until_pixel(image_path, 123, 41, ink)
@@ -308,7 +308,7 @@ def verify_desktop(console, qmp, image_path):
     if preview:
         qmp.capture(Path(preview).resolve())
 
-    # デスクトップのEditorアイコンを開き、窓のNewとSaveをマウスで使う。
+    # Open the desktop's Editor icon and use New and Save with the mouse.
     qmp.move_to(49, 126)
     qmp.until_pixel(image_path, 49, 126, ink)
     qmp.click()
@@ -335,7 +335,7 @@ def verify_desktop(console, qmp, image_path):
             expect_equal(received, expected)
         time.sleep(0.05)
 
-    # 保存後に別の経路で更新された内容を、古い下書きから上書きしない。
+    # An older draft must not overwrite changes saved through another path.
     expect_command(console, b"write note.txt from serial", b"Saved.\r\n")
     qmp.keys("ret", "o", "l", "d", "f3")
     expect_text(qmp, image_path, 214, 154, "Unsaved changes", 1, paper, bytes.fromhex("8e381b"))
@@ -359,7 +359,7 @@ def verify_editor_save(console, qmp, image_path):
         qmp.until_pixel(image_path, x, y, ink)
         qmp.click()
 
-    # Ctrl+Shift+S を押しただけでは元ファイルを書き換えない。
+    # Ctrl+Shift+S alone leaves the original file intact.
     qmp.keys("x")
     qmp.chord("ctrl", "shift", "s")
     time.sleep(0.05)
@@ -371,7 +371,7 @@ def verify_editor_save(console, qmp, image_path):
     expect_command(console, b"cat mouse.txt", original + b"x\r\n")
     expect_command(console, b"cat copy.txt", original + b"\r\n")
 
-    # 同名で保存できなくても下書きを保持し、Cancelの後は通常保存できる。
+    # Keep the draft when saving under the same name fails. Normal Save still works after Cancel.
     qmp.keys("y")
     click(359, 121)
     qmp.keys("n", "o", "t", "e", "dot", "t", "x", "t", "ret")
@@ -384,7 +384,7 @@ def verify_editor_save(console, qmp, image_path):
     expect_text(qmp, image_path, 214, 154, "Saved", 1, bytes.fromhex("ffffff"), bytes.fromhex("135a56"))
     expect_command(console, b"cat mouse.txt", original + b"xy\r\n")
 
-    # 長い名前の末尾を黙って切り捨てて、意図した名前と別のファイルに保存してはいけない。
+    # Reject long names to prevent saving under a silently truncated name.
     qmp.keys("f4", *("a",) * 24, "b", "ret")
     expect_command(console, b"cat " + b"a" * 24, b"File not found.\r\n")
     qmp.until_pixel(image_path, 450, 192, accent_light)
@@ -413,7 +413,7 @@ def verify_editor_mouse(console, qmp, image_path):
         qmp.move_to(295, y)
         qmp.button(False)
 
-    # マウスで選んだ範囲を文字入力で置き換え、別の範囲をBackspaceで削除する。
+    # Replace one mouse selection by typing and delete another with Backspace.
     select_line(188)
     qmp.until_pixel(image_path, 218, 208, highlight)
     qmp.keys("w", "o", "r", "l", "d")
@@ -428,7 +428,7 @@ def verify_editor_mouse(console, qmp, image_path):
     if editor_preview:
         qmp.capture(Path(editor_preview).resolve())
 
-    # スクロールで先頭を表示しても、カーソルへ勝手に戻らない。
+    # Scrolling to the top must leave the viewport there until the user moves it again.
     click(215, 240)
     qmp.keys(*("ret",) * 12, "z")
     qmp.until_pixel(image_path, 645, 185, toolbar)
@@ -436,7 +436,7 @@ def verify_editor_mouse(console, qmp, image_path):
     qmp.until_pixel(image_path, 645, 185, muted)
     expect_text(qmp, image_path, 214, 183, "world", 2, bytes.fromhex("ffffff"))
 
-    # 未保存で閉じる場合も、マウスで残すか破棄するかを選べる。
+    # The mouse can choose whether to keep or discard edits when closing a dirty window.
     click(654, 88)
     qmp.until_pixel(image_path, 510, 397, bytes.fromhex("8e381b"))
     click(620, 403)
@@ -511,7 +511,7 @@ def verify_processes(console):
         if time.monotonic() >= deadline:
             raise AssertionError(f"Runnable processes did not make progress: {before}, {after}")
         time.sleep(0.01)
-    # spinにはsyscallがない。実際のタイマー割り込みと、他の2タスクの進行を同時に確認する。
+    # spin makes no syscalls. Check that timer interrupts preempt it and both other tasks make progress.
     if (spin not in before or spin not in after or after[spin][0] != b"spin"
             or after[spin][3] <= before[spin][3]):
         raise AssertionError(f"Non-yielding process did not get preempted: {before}, {after}")
@@ -561,7 +561,7 @@ def verify_windows(console, qmp, image_path):
     qmp.until_pixel(image_path, 201, 78, accent)
     expect_command(console, b"cat b.txt", b"two\r\n")
 
-    # タイトルバーで最小化し、タスクバーから同じ文書を復元する。
+    # Minimize from the title bar and restore the same document from the taskbar.
     qmp.move_to(628, 88)
     qmp.until_pixel(image_path, 628, 88, cursor)
     qmp.click()
@@ -580,7 +580,7 @@ def verify_windows(console, qmp, image_path):
         raise AssertionError(f"Counter windows did not launch independent tasks: {running}")
     expect_file_bytes(console, b"counter.elf", (APP_DIRECTORY / "counter.elf").read_bytes())
 
-    # GUIからELFへ入力を送り、ELFが返したテキストで止まったことを確認する。
+    # Send GUI input to the ELF and check its returned text to confirm it paused.
     qmp.move_to(540, 372)
     qmp.until_pixel(image_path, 540, 372, cursor)
     qmp.click()
@@ -625,14 +625,14 @@ def verify_file_window(console, qmp, image_path):
     qmp.until_pixel(image_path, 36, 367, cursor)
     qmp.click()
     qmp.until_pixel(image_path, 130, 51, accent)
-    # ELFもファイル一覧に載るので、シリアルの一覧でcopy.txtの行を調べる。
+    # The file listing includes ELFs, so find the copy.txt row in the serial listing.
     names = console.command(b"ls\r").splitlines()[1:]
     qmp.keys(*("down",) * names.index(b"copy.txt"), "ret")
     qmp.until_pixel(image_path, 225, 107, accent)
     expect_text(qmp, image_path, 238, 238, "dlang", 2, bytes.fromhex("ffffff"))
     running, _ = wait_process_names(console, b"files.elf", b"editor.elf")
 
-    # 開き直しても同じEditorプロセスのウィンドウが前面に戻る。
+    # Reopening brings the same Editor process's window to the front.
     qmp.keys("f5")
     qmp.until_pixel(image_path, 130, 51, accent)
     qmp.keys("ret")
@@ -659,7 +659,7 @@ def verify_new_apps(console, qmp, image_path):
         if prefix:
             qmp.capture(Path(f"{prefix}-{app}.ppm").resolve())
 
-    # 先行テストのEditorを閉じて、キーボードのAppsメニューからCalcを起動する。
+    # Close the Editor from the previous test and launch Calc from the Apps menu using the keyboard.
     qmp.keys("f10", "f1", "down", "down", "down", "ret")
     qmp.until_pixel(image_path, 187, 66, accent)
     qmp.keys("7", "dot", "5")
@@ -691,7 +691,7 @@ def verify_new_apps(console, qmp, image_path):
     expect_text(qmp, image_path, 350, 131, "Out of range", 1, paper, warning)
     qmp.keys("f10")
 
-    # スネークを起動し、最初の餌を食べて1点になった後、矢印で上へ曲がる。
+    # Start Snake, score one point by eating the first food, and press Up to turn.
     click(160, 126)
     qmp.until_pixel(image_path, 209, 96, accent)
     qmp.keys("ret")
@@ -701,7 +701,7 @@ def verify_new_apps(console, qmp, image_path):
     preview("game")
     wait_process_names(console, b"game.elf")
 
-    # 別アプリが前面になるとゲームが止まり、Monitorの表はユーザープロセスの増減に追従する。
+    # Focusing another app pauses the game. Monitor reflects changes in the set of user processes.
     click(160, 203)
     qmp.until_pixel(image_path, 340, 74, accent)
     qmp.until_pixel(image_path, 275, 242, ink)
@@ -721,7 +721,7 @@ def verify_new_apps(console, qmp, image_path):
 
 
 def old_record(sequence, name, contents):
-    # DLANGFS1ではメタデータと478バイトの本文領域が同じセクタにある。
+    # DLANGFS1 stores metadata and the 478-byte data area in the same sector.
     raw = struct.pack("<IIH24s478s", sequence, 0, len(contents), name, contents)
     checksum = 2166136261
     for byte in raw[:4] + raw[8:]:
@@ -783,7 +783,7 @@ def verify_disk_elf(console):
     expect_command(console, b"run hello.elf", b"Unsupported or invalid ELF executable.\r\n")
     expect_equal(process_list(console), (before, totals))
 
-    # PT_LOADを配置した後で入口の検証に失敗しても、割り当てを回収する。
+    # Reclaim allocations if entry-point validation fails after mapping PT_LOAD segments.
     invalid_entry = bytearray(hello)
     invalid_entry[24:32] = bytes(8)
     put_file(console, b"hello.elf", invalid_entry)
@@ -793,7 +793,7 @@ def verify_disk_elf(console):
 
     put_file(console, b"hello.elf", hello)
     run_hello(console)
-    run_hello(console)  # 前回書いたBSSが再利用時に残らない。
+    run_hello(console)  # Reused BSS must be clear of data from the previous run.
     expect_equal(process_list(console), (before, (totals[0] + 2, totals[1])))
     expect_equal(free_memory(console), baseline_memory)
 
@@ -833,7 +833,7 @@ def verify_sleep(console):
             raise AssertionError("sleep did not resume at its deadline")
         time.sleep(0.05)
     assert_quiescent(console, pid)
-    # Ring 3実行中にもUART IRQが入り、バースト転送を欠落させない。
+    # UART IRQs must still arrive during Ring 3 execution so bursts are received intact.
     burst = bytes(range(256)) * 64
     put_file(console, b"burst.bin", burst)
     expect_file_bytes(console, b"burst.bin", burst)
@@ -867,7 +867,7 @@ def verify_d_initialization(console):
 def verify_d_heap(console):
     put_file(console, b"d_heap.elf", (APP_DIRECTORY / "d_heap.elf").read_bytes())
     before, totals = process_list(console)
-    # 同じスロットを再利用しても、BSSの管理情報とヒープの初期値は毎回ゼロから始まる。
+    # BSS bookkeeping and initial heap contents start at zero even when a slot is reused.
     for _ in range(2):
         expect_command(console, b"run d_heap.elf",
                        b"D heap: new and array append passed.\r\nD application heap exhausted.\r\n")
@@ -886,7 +886,7 @@ def verify_d_exceptions(console):
 def verify_d_arrays(console):
     put_file(console, b"d_array.elf", (APP_DIRECTORY / "d_array.elf").read_bytes())
     before, totals = process_list(console)
-    # 成功例の後、端数の残るキャストでアプリだけがフォルトする。
+    # After the successful cases, an array cast with a partial element faults only the app.
     expect_command(console, b"run d_array.elf", b"D arrays: casts and concatenation passed.\r\n")
     expect_equal(process_list(console), (before, (totals[0], totals[1] + 1)))
 
@@ -953,7 +953,7 @@ def verify_counter_reads_disk(console, qmp, screen):
 def verify_migration_and_large_files(qemu_command, root):
     disk = root / "legacy-data.img"
     legacy = old_disk_image()
-    # 移行途中に停止して新領域だけ書かれた状態。完了マーカーはまだ空。
+    # Simulate an interrupted migration with the new area written and the completion marker still blank.
     legacy[34 * 512 : 34 * 512 + 4] = b"part"
     disk.write_bytes(legacy)
     source_end = 33 * 512
@@ -975,7 +975,7 @@ def verify_migration_and_large_files(qemu_command, root):
         expect_equal(console.read_until(PROMPT), b"Invalid hex data or byte count. File was not changed.\r\n")
         expect_file_bytes(console, b"large.txt", large_text)
 
-        # 移行済みディスクにもELFを配置し、Filesから6 KiB超の文書を開いて追記・保存する。
+        # Install ELFs on the migrated disk and use Files to open, append to, and save a document larger than 6 KiB.
         for name in ("files.elf", "editor.elf"):
             put_file(console, name.encode(), (APP_DIRECTORY / name).read_bytes())
         qmp.keys("f5", "down", "ret")
@@ -995,7 +995,7 @@ def verify_migration_and_large_files(qemu_command, root):
         expect_file_bytes(console, b"full.bin", binary)
     expect_equal(disk.read_bytes(), migrated)
 
-    # 有効な旧世代が残っていない破損ファイルは、消失扱いで移行しない。
+    # A corrupted file with no valid prior generation is treated as lost and skipped during migration.
     corrupt = root / "legacy-corrupt.img"
     bad_data = old_disk_image()
     bad_data[5 * 512 + 40] ^= 1
@@ -1019,7 +1019,7 @@ def verify_volume_layout(qemu_command, root):
         raise AssertionError("Formatter overwrote an existing image")
     expect_equal(disk.read_bytes(), initial)
     expect_equal(struct.unpack_from("<8I", initial, 8), (3, 512, 3, 5000, 9, 13, 34, 24))
-    # 配置の隙間はファイル領域ではない。保存や再起動後も変えてはならない。
+    # Gaps in the layout are outside the file area and must survive saves and restarts unchanged.
     gaps = [(512, 9 * 512)] + [((9 + copy * 13 + 11) * 512, (9 + (copy + 1) * 13) * 512)
                                for copy in range(6)]
     for begin, end in gaps:
@@ -1042,14 +1042,14 @@ def verify_volume_layout(qemu_command, root):
     expect_equal(saved[:512], initial[:512])
     for begin, end in gaps:
         expect_equal(saved[begin:end], initial[begin:end])
-    # slot 1の第2世代はLBA48、本文は49から始まる。
+    # Slot 1's second copy starts at LBA 48, with its data starting at LBA 49.
     expect_equal(saved[48 * 512 + 10:48 * 512 + 15], b"b.bin")
     expect_equal(saved[49 * 512:49 * 512 + len(payload)], payload)
     with boot(qemu_command, disk) as (console, _):
         expect_file_bytes(console, b"b.bin", payload)
         expect_command(console, b"cat a.txt", b"second\r\n")
     damaged = bytearray(disk.read_bytes())
-    damaged[10 * 512] ^= 1  # slot 0の新しい第1世代の本文だけを破損する。
+    damaged[10 * 512] ^= 1  # Corrupt only the data in slot 0's newer copy.
     disk.write_bytes(damaged)
     with boot(qemu_command, disk) as (console, _):
         expect_command(console, b"cat a.txt", b"first\r\n")
@@ -1060,7 +1060,7 @@ def verify_volume_layout(qemu_command, root):
             checksum = ((checksum ^ value) * 16777619) & 0xFFFFFFFF
         struct.pack_into("<I", image, 40, checksum)
 
-    # 構造の不正と単なるチェックサム不一致を別々に検査する。
+    # Test invalid layout fields separately from checksum mismatches.
     invalid_layouts = [(8, 4), (16, 0), (16, 17), (20, 16385), (24, 0),
                        (24, 0x0fffffff), (28, 1), (32, 99), (44, 1)]
     for index, (offset, value) in enumerate(invalid_layouts + [(40, 0)]):
@@ -1085,7 +1085,7 @@ def verify_desktop_clock(qemu_command, root):
         expect_text(qmp, screen, 660, 567, "2024-02-29", 1, background, foreground)
         expect_text(qmp, screen, 660, 583, "12:34:", 1, background, foreground)
         expect_text(qmp, screen, 724, 583, "    ", 1, background, foreground)
-        # 入力なしのアイドル状態でも秒の表示が変わる。
+        # The displayed seconds advance even while idle with no input.
         def seconds_pixels(width, data):
             return b"".join(data[((583 + row) * width + 708) * 3:
                                  ((583 + row) * width + 724) * 3] for row in range(14))
@@ -1120,7 +1120,7 @@ def verify_close_deadline(qemu_command, root):
 
         wait_value(1)
         qmp.keys("f10")
-        wait_value(3)  # ゲスト内で1500 ms待ち、1000 msの期限を越えたことを確認する。
+        wait_value(3)  # The guest waits 1500 ms, past the 1000 ms close deadline.
         qmp.keys("ret")
         wait_value(4)
         qmp.keys("f10")
@@ -1150,16 +1150,16 @@ def verify_app_catalog(qemu_command, root):
         put_file(console, b"desktop.apps", catalog)
     with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
         screen = root / "catalog.ppm"
-        qmp.keys("f8")  # 通常はEditorのキーだが、設定に従って未登録ELFを起動する。
+        qmp.keys("f8")  # F8 normally opens Editor. The catalog makes it launch the external ELF.
         expect_text(qmp, screen, 90, 65, "Example", 1,
                     bytes.fromhex("135a56"), bytes.fromhex("ffffff"))
         qmp.until_pixel(screen, 379, 239, bytes.fromhex("135a56"))
         running, _ = wait_process_names(console, b"example.elf")
-        # 設定ファイルを書き換えても、起動時のスナップショットが有効なまま。
+        # The boot-time snapshot stays active after the catalog file is rewritten.
         put_file(console, b"desktop.apps", b"broken")
         qmp.keys("f8", "f8")
         expect_equal(set(wait_process_names(console, b"example.elf")[0]), set(running))
-        qmp.keys("f2")  # 文書担当もファイル名や登録順ではなく設定から選ぶ。
+        qmp.keys("f2")  # The catalog also selects the document handler independently of filename and registration order.
         wait_process_names(console, b"example.elf", b"writer.elf")
         qmp.keys("esc", "f10")
         wait_process_names(console, b"example.elf")
@@ -1167,22 +1167,22 @@ def verify_app_catalog(qemu_command, root):
         wait_process_names(console)
 
     malformed = [
-        b"DLANGAPPS1\n",  # 空登録
+        b"DLANGAPPS1\n",  # Empty registry.
         b"DLANGAPPS2\n" + row,
-        b"DLANGAPPS1\n" + row + row,  # 実行ファイル・キー重複
+        b"DLANGAPPS1\n" + row + row,  # Duplicate executable and key.
         b"DLANGAPPS1\n" + row + row.replace(b"example.elf", b"other.elf"),
         b"DLANGAPPS1\n" + writer + writer.replace(b"writer.elf", b"other.elf").replace(b"F9", b"F8"),
         b"DLANGAPPS1\n" + row.replace(b"300|180", b"99999999999999999|180"),
         b"DLANGAPPS1\n" + row.replace(b"300|180", b"0|180"),
         b"DLANGAPPS1\n" + row.replace(b"generic", b"unknown"),
         b"DLANGAPPS1\n" + row.replace(b"Clock", b"Cl\x00ck"),
-        b"DLANGAPPS1\n" + row + b"incomplete",  # 有効な先頭行も適用しない。
+        b"DLANGAPPS1\n" + row + b"incomplete",  # Reject even the valid first entry.
         b"#" * 4097,
         b"DLANGAPPS1\n" + b"".join(
             row.replace(b"example.elf", f"app{i}.elf".encode()).replace(b"F8", b"-")
             for i in range(13)),
     ]
-    # 直前のbrokenを起点に、拒否された設定でもシェルから次の設定を保存できる。
+    # After the broken catalog, verify that rejected configurations still allow saving the next one from the shell.
     for index in range(len(malformed) + 1):
         with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
             screen = root / "invalid-catalog.ppm"
@@ -1196,7 +1196,7 @@ def verify_app_catalog(qemu_command, root):
             if index < len(malformed):
                 put_file(console, b"desktop.apps", malformed[index])
             else:
-                # 上限12件を受理し、CRLF・コメント・最終改行なしも扱う。
+                # Accept the maximum of 12 entries, CRLF, comments, and a missing final newline.
                 full = b"# custom launcher\r\nDLANGAPPS1\r\n" + b"".join(
                     row.replace(b"example.elf", f"app{i}.elf".encode()).replace(b"F8", b"-")
                     for i in range(11)) + row.replace(b"80|60", b"-2048|2048").rstrip(b"\n")
@@ -1207,7 +1207,7 @@ def verify_app_catalog(qemu_command, root):
                     "No document application is registered.", 1,
                     bytes.fromhex("152843"), bytes.fromhex("ffffff"))
         expect_equal(process_list(console)[0], {})
-        qmp.keys("f1", "up", "ret")  # 12番目の登録へ折り返す。
+        qmp.keys("f1", "up", "ret")  # Wrap to the 12th entry.
         expect_text(qmp, root / "clamped-catalog.ppm", 22, 377, "Example", 1,
                     bytes.fromhex("135a56"), bytes.fromhex("ffffff"))
         wait_process_names(console, b"example.elf")
@@ -1218,7 +1218,7 @@ def verify_app_catalog(qemu_command, root):
 def verify_external_gui(qemu_command, root):
     disk = root / "external-gui.img"
     format_disk(disk)
-    # 未登録の別名・別タイトルでも、共通guiCreateで窓を作れる。
+    # An unregistered app with a different filename and title can open a window through guiCreate.
     binary = (APP_DIRECTORY / "counter.elf").read_bytes()
     expect_equal(binary.count(b"Counter"), 1)
     binary = binary.replace(b"Counter", b"Example")
@@ -1242,7 +1242,7 @@ def verify_external_gui(qemu_command, root):
         qmp.keys("f10")
         _, after = wait_process_names(console)
         expect_equal(after, (totals[0] + 1, totals[1]))
-        # 閉じた後に窓が残らず、背景へ戻ることを確認する。
+        # Closing the window restores the desktop background.
         qmp.until_pixel(screen, 510, 115, background)
 
 
@@ -1250,7 +1250,7 @@ def verify_storage_discovery(qemu_command, root):
     unrelated = root / "unrelated.img"
     untouched = b"OTHERIMG" + bytes(1024 * 1024 - 8)
     unrelated.write_bytes(untouched)
-    # primary slave、secondary master/slaveでも同じファイル操作が成立する。
+    # The same file operations work on primary slave, secondary master, and secondary slave.
     for index in (1, 2, 3):
         disk = root / f"ide-position-{index}.img"
         format_disk(disk)
@@ -1261,7 +1261,7 @@ def verify_storage_discovery(qemu_command, root):
             expect_command(console, b"cat location.txt", b"discovered\r\n")
         expect_equal(unrelated.read_bytes(), untouched)
 
-    # 候補が複数あればv1の移行も始めず、どちらのディスクにも書かない。
+    # With multiple candidates, keep both disks untouched and skip v1 migration.
     first = root / "ambiguous-v1.img"
     second = root / "ambiguous-v3.img"
     first.write_bytes(old_disk_image())
@@ -1271,7 +1271,7 @@ def verify_storage_discovery(qemu_command, root):
         expect_command(console, b"write forbidden.txt no", b"Data disk unavailable.\r\n")
     expect_equal((first.read_bytes(), second.read_bytes()), originals)
 
-    # 正しいヘッダでも、IDENTIFYの実容量を越えるレイアウトは拒否する。
+    # Reject a layout larger than the drive capacity reported by IDENTIFY, even with a valid header.
     small = root / "truncated-volume.img"
     format_disk(small)
     small.write_bytes(small.read_bytes()[:512])
@@ -1294,13 +1294,13 @@ def main(qemu_command):
         install_desktop_apps(qemu_command, disk)
         with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
             verify_desktop_reads_disk(console, qmp, root / "screen.ppm")
-            qmp.keys("esc")  # ファイルの起動エラー表示を閉じて、初期画面を確認する。
+            qmp.keys("esc")  # Dismiss the file launch error before checking the initial screen.
             verify_desktop(console, qmp, root / "screen.ppm")
             verify_windows(console, qmp, root / "screen.ppm")
             verify_new_apps(console, qmp, root / "screen.ppm")
             verify_disk_elf(console)
 
-        # 実験用ELFとデスクトップ用ELFで、16ファイルの枠を取り合わないようにする。
+        # Use a separate disk so experiment and desktop ELFs do not compete for 16 file slots.
         experiments = root / "experiments.img"
         experiments.write_bytes(b"DLANGFS2" + bytes(1024 * 1024 - 8))
         with boot(qemu_command, experiments) as (console, _):
@@ -1314,7 +1314,7 @@ def main(qemu_command):
             verify_phobos(console)
             expect_equal(free_memory(console), baseline_memory)
 
-        # ディスクを差し直し、GUIの保存とシェルの削除が残ることを確認する。
+        # Reattach the disk and verify that GUI saves and shell deletions persist.
         with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
             expect_command(console, b"cat copy.txt", b"hello\r\ndlang\r\nold\r\n")
             expect_command(console, b"cat mouse.txt", b"hello\r\ndlang\r\noldxy\r\n")
@@ -1325,7 +1325,7 @@ def main(qemu_command):
             verify_file_window(console, qmp, root / "screen.ppm")
             verify_halt(console)
 
-        # 新版の本文だけを破損させ、再マウントで旧版に戻ることを検証する。
+        # Corrupt only the newer file data and check that remounting falls back to the previous generation.
         content = disk.read_bytes()
         damaged = content.index(b"second version")
         with disk.open("r+b") as image:

@@ -1,4 +1,4 @@
-/// 暦の境界、入力検証、表示形式をホスト上で検証する。
+/// Verify calendar boundaries, input validation, and formatting on the host.
 module calendar_test;
 import calendar;
 extern(C) int main() nothrow @nogc

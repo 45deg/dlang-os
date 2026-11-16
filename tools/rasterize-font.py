@@ -1,4 +1,4 @@
-"""Pillowで印字可能ASCIIを2つのサイズに描き、1画素1バイトの濃度表を作る。"""
+"""Rasterize printable ASCII in two sizes with Pillow and store one coverage byte per pixel."""
 
 import argparse
 from pathlib import Path

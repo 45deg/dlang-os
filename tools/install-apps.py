@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QEMUのシリアルシェルを使い、DlangFSに未配置のアプリだけを追加する。"""
+"""Add missing apps to DlangFS through QEMU's serial shell."""
 
 import argparse
 import os
