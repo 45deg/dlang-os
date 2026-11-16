@@ -3,6 +3,7 @@
 module dlangos.cabi;
 
 public import core.stdc.config : c_long, c_ulong;
+public import core.stdc.stddef : wchar_t;
 public import core.stdc.stdarg : va_list;
 alias int8_t = byte; alias uint8_t = ubyte;
 alias int16_t = short; alias uint16_t = ushort;
@@ -16,12 +17,16 @@ alias sig_atomic_t = int;
 struct tm { int tm_sec, tm_min, tm_hour, tm_mday, tm_mon, tm_year, tm_wday, tm_yday, tm_isdst; }
 struct timespec { time_t tv_sec; c_long tv_nsec; }
 struct mbstate_t { uint state; uint value; }
-struct FILE { int descriptor; }
+struct FILE { int descriptor; int orientation; int error; bool closed; }
+alias _iobuf = FILE;
 alias fpos_t = long;
 enum EOF = -1, EXIT_SUCCESS = 0, EXIT_FAILURE = 1;
 enum CLOCKS_PER_SEC = 1_000_000;
 enum WEOF = uint.max;
 enum ERANGE = 34, EINVAL = 22, ENOMEM = 12, ENOSYS = 38;
+enum EBADF = 9, EIO = 5, EILSEQ = 84;
+enum SEEK_SET = 0, SEEK_CUR = 1, SEEK_END = 2;
+enum _IOFBF = 0, _IOLBF = 1, _IONBF = 2;
 extern(C) extern __gshared FILE* stdout, stderr, stdin;
 extern(C) nothrow @nogc:
 void* malloc(size_t);
@@ -48,16 +53,29 @@ int fflush(FILE*);
 int fclose(FILE*);
 FILE* fopen(const(char)*, const(char)*);
 size_t fread(void*, size_t, size_t, FILE*);
-int ferror(FILE*);
-int feof(FILE*);
+int ferror(FILE*) pure @safe;
+int feof(FILE*) pure;
 int fseek(FILE*, c_long, int);
 c_long ftell(FILE*);
 int remove(const(char)*);
 int rename(const(char)*, const(char)*);
 int* __errno_location();
-ref int errno();
+ref int errno() @safe;
 
 time_t time(time_t*);
 pragma(LDC_alloca) void* alloca(size_t) pure;
 
-extern(C) int sscanf(const(char)*, const(char)*, ...) nothrow @nogc;
+int sscanf(const(char)*, const(char)*, ...);
+int fgetc(FILE*);
+wint_t fgetwc(FILE*);
+wint_t fputwc(wchar_t, FILE*);
+int fwide(FILE*, int);
+FILE* freopen(const(char)*, const(char)*, FILE*);
+FILE* fdopen(int, const(char)*);
+int setvbuf(FILE*, char*, int, size_t);
+void setbuf(FILE*, char*);
+void clearerr(FILE*) pure @safe;
+int ungetc(int, FILE*);
+void rewind(FILE*) @safe;
+FILE* tmpfile() @safe;
+int fileno(FILE*);

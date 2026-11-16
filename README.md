@@ -21,4 +21,5 @@ make run-gui
 - [DlangFSのディスク形式](docs/dlangfs.md)
 - [アプリ開発とABI](apps/README.md)
 - [標準druntimeの移植基盤とライセンス](docs/druntime.md)
+- [上流Phobosのwriteln](docs/phobos.md)
 - [フォントのライセンスと生成手順](assets/fonts/README.md)

@@ -1,0 +1,54 @@
+--- a/core/memory.d
++++ b/core/memory.d
+@@ -209,7 +209,11 @@
+ pragma(mangle, initialize.mangleof)
+ private extern (C) void _initialize() @system
+ {
+-    version (Posix)
++    version (DlangOS)
++    {
++        (cast() pageSize) = 4096;
++    }
++    else version (Posix)
+     {
+         import core.sys.posix.unistd : sysconf, _SC_PAGESIZE;
+ 
+--- a/rt/util/typeinfo.d
++++ b/rt/util/typeinfo.d
+@@ -426,6 +426,9 @@
+ static if (is(cent)) class TypeInfo_zi : TypeInfoGeneric!cent {}
+ static if (is(ucent)) class TypeInfo_zk : TypeInfoGeneric!ucent {}
+ 
++// DlangOS does not save floating-point/SIMD state yet.
++version (DlangOS) {} else
++{
+ // All simple floating-point types.
+ class TypeInfo_f : TypeInfoGeneric!float {}
+ class TypeInfo_d : TypeInfoGeneric!double {}
+@@ -495,6 +498,8 @@
+             arg2 = typeid(real);
+             return 0;
+         }
++}
++
+ }
+ 
+ // Arrays of all integrals.
+@@ -556,6 +561,8 @@
+     assert(!(a1 < b1 && b1 < a1)); // Original failing case
+ }
+ 
++version (DlangOS) {} else
++{
+ // Arrays of all simple floating-point types.
+ class TypeInfo_Af : TypeInfoArrayGeneric!float {}
+ class TypeInfo_Ad : TypeInfoArrayGeneric!double {}
+@@ -599,6 +606,8 @@
+ deprecated class TypeInfo_Ac : TypeInfoArrayGeneric!d_creal
+ {
+     override string toString() const pure nothrow @safe { return "creal[]"; }
++}
++
+ }
+ 
+ // void[] is a bit different, behaves like ubyte[] for comparison purposes.

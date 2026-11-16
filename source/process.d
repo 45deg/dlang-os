@@ -1,4 +1,5 @@
-/// spawnElf maps the ELF and heap. runNext runs Ring 3 processes that are ready to execute.
+/// spawnElf maps the ELF and heap. runNext runs ready Ring 3 processes and switches TLS.
+/// userWrite accepts serial text bytes; window titles retain their ASCII-only validation.
 module process;
 
 import address_space : AddressSpace, initPaging, initUserSpace, releaseUserSpace, mapBuiltin, mapUserHeap, resizeHeap, copyFromUser,
@@ -369,12 +370,14 @@ private ulong openWindow(ref Process task, ref const AddressSpace space)
     return 0;
 }
 
-private bool readText(ref const AddressSpace space, ulong address, scope char[] text, bool allowNewline)
+private bool readText(ref const AddressSpace space, ulong address, scope char[] text, bool serialText)
 {
     if (text.length && !copyFromUser(space, address, text))
         return false;
+    // Serial chunks may split UTF-8 sequences; pass high bytes through, but reject terminal controls.
+    // Window titles keep the ASCII-only contract.
     foreach (char c; text)
-        if ((c < ' ' || c > '~') && !(allowNewline && c == '\n'))
+        if ((c < ' ' || c > '~') && !(serialText && (c == '\n' || cast(ubyte) c >= 0x80)))
             return false;
     return true;
 }

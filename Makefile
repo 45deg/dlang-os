@@ -205,3 +205,22 @@ druntime-package: druntime-bootstrap druntime-startup
 	tar -czf build/druntime/druntime-bootstrap-bundle.tar.gz -C build/druntime \
 		bootstrap startup ldc-source.tar.gz upstream/manifest.json \
 		-C "$(CURDIR)" runtime/druntime/patches runtime/druntime/port runtime/druntime/app.ld
+
+# Upstream Phobos std.stdio output on the static single-thread druntime port.
+PHOBOS_ARCHIVE ?=
+.PHONY: phobos-fetch phobos-output test-phobos phobos-package
+phobos-fetch:
+	"$(PYTHON)" tools/phobos.py fetch $(if $(PHOBOS_ARCHIVE),--archive "$(PHOBOS_ARCHIVE)")
+
+phobos-output: druntime-startup
+	"$(PYTHON)" tools/phobos.py build --ldc "$(LDC)"
+
+test-phobos: check-ovmf all phobos-output
+	"$(PYTHON)" tests/phobos_qemu.py "$(QEMU)" $(QEMU_FLAGS) -display none
+
+phobos-package: druntime-package phobos-output
+	tar -czf build/phobos/phobos-output-bundle.tar.gz -C "$(CURDIR)" \
+		build/phobos/output build/phobos/phobos-source.tar.gz runtime/phobos \
+		runtime/druntime/port runtime/druntime/app.ld tools/phobos.py tools/druntime.py \
+		apps/experiments/phobos_hello.d apps/experiments/phobos_output.d \
+		build/druntime/druntime-bootstrap-bundle.tar.gz

@@ -17,3 +17,5 @@ make test
 旧DlangFS3の読み書き・復旧と、GUIの文書転送上限が16 KiBのままであることも検証します。標準druntimeのクロスビルドは通常の `make` から分離しています。[移植基盤の手順](druntime.md)を参照してください。
 
 `make test-druntime` は別の使い捨てディスクでC ABI、標準のモジュール初期化・終了、2プロセスのTLS保持とページ回収を検証します。C側の検証用コードにはClangを使用します。
+
+`make phobos-fetch` の後、`make test-phobos` で上流Phobosの `writeln` をQEMUで実行できます。[対応範囲と成果物](phobos.md)を参照してください。

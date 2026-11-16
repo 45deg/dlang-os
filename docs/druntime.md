@@ -1,6 +1,6 @@
 # 標準druntimeの移植基盤
 
-対象はLDC 1.43.0、`x86_64-unknown-none-elf`、静的リンク、1プロセス1スレッドです。現在は**LP64のC ABI、主スレッドのTLS、標準druntimeのモジュール初期化と通常終了処理**に対応しています。標準druntime全体の移植はまだ完了していません。既存の `apps/runtime/` は従来のアプリで引き続き使用します。
+対象はLDC 1.43.0、`x86_64-unknown-none-elf`、静的リンク、1プロセス1スレッドです。現在は**LP64のC ABI、主スレッドのTLS、標準druntimeのモジュール初期化と通常終了処理**に対応しています。標準druntime全体の移植はまだ完了していません。既存の `apps/runtime/` は従来のアプリで引き続き使用します。上流 `std.stdio.writeln` の追加移植は [Phobosの手順](phobos.md) を参照してください。
 
 ## 取得とビルド
 

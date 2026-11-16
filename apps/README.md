@@ -66,7 +66,7 @@ LDC 1.43.0 で各 API の代表的な使い方を試した結果です。QEMU �
 | 0 | `yield` | 実行をいったん譲る |
 | 1 | `publish` | RDIの値をプロセス統計に公開する |
 | 2 | `exit` | プロセスを終了する |
-| 3 | `write` | ASCIIとLFをシリアルへ出す。1回最大128バイト |
+| 3 | `write` | 印字可能ASCII・LF・UTF-8の上位バイトをシリアルへ出す。1回最大128バイト（LF以外のASCII制御文字は拒否） |
 
 Counterは入力イベントで一時停止と再開を切り替え、閉じる通知を受けると自分で終了します。ウィンドウ枠と文字描画はカーネルが担当します。
 
@@ -85,3 +85,5 @@ GUIの窓作成には `guiCreate`（14）へASCIIタイトル（1〜24バイト�
 ## 標準druntimeの移植基盤
 
 `make druntime-fetch` と `make test-druntime` で、固定したLDC 1.43.0の標準druntimeから部分アーカイブを作り、約100 KiBのELFをQEMUで検証できます。従来の `apps/runtime/` とは別のビルドです。`make druntime-startup` でC ABI・主スレッドTLS・標準モジュール初期化と通常終了に対応した別アーカイブも作れます。標準GCなどは未対応です。[ビルド手順とライセンス管理](../docs/druntime.md)を参照してください。
+
+上流Phobosの `std.stdio.writeln` を使う例は [phobos_hello.d](experiments/phobos_hello.d) です。`make test-phobos` でQEMU実行を確認できます。[ビルド手順と対応範囲](../docs/phobos.md)を参照してください。

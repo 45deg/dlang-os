@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/ldc-developers/phobos",
+  "commit": "4d4842eff1f50b9edd90b9a7fc470a7b2fc4e85c",
+  "ldc_version": "1.43.0",
+  "url": "https://codeload.github.com/ldc-developers/phobos/tar.gz/4d4842eff1f50b9edd90b9a7fc470a7b2fc4e85c",
+  "archive_prefix": "phobos-4d4842eff1f50b9edd90b9a7fc470a7b2fc4e85c/",
+  "sha256": "5bced292e0a2b6ad1632d8c25c7e7c85e55150e548dbd9d8d48b5abb77b12f51"
+}

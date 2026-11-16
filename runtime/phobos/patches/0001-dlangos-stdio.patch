@@ -1,0 +1,123 @@
+--- a/std/stdio.d
++++ b/std/stdio.d
+@@ -121,7 +121,11 @@
+ +/
+ alias KeepTerminator = Flag!"keepTerminator";
+ 
+-version (CRuntime_Microsoft)
++version (DlangOS)
++{
++    version = GENERIC_IO;
++}
++else version (CRuntime_Microsoft)
+ {
+ }
+ else version (MinGW) // LDC
+@@ -342,7 +346,13 @@
+         pragma(mangle, core.stdc.wchar_.fgetwc.mangleof) int _FGETWC(_iobuf* fp);
+     }
+ 
+-    version (CRuntime_WASI)
++    version (DlangOS)
++    {
++        // Each process has one thread; streams are process-local.
++        private extern(D) void _FLOCK(FILE*) {}
++        private extern(D) void _FUNLOCK(FILE*) {}
++    }
++    else version (CRuntime_WASI)
+     {
+         // no file locking/unlocking at the moment
+         private extern(D) void _FLOCK(FILE*) {}
+@@ -857,6 +867,12 @@
+             auto fp = fdopen(fd, modez);
+             errnoEnforce(fp);
+         }
++        else version (DlangOS)
++        {
++            import dlangos.cabi : fdopen;
++            auto fp = fdopen(fd, modez);
++            errnoEnforce(fp);
++        }
+         else
+             static assert(0, "no fdopen() available");
+ 
+@@ -1091,6 +1107,10 @@
+             import core.sys.darwin.fcntl : fcntl, F_FULLFSYNC;
+             import std.exception : errnoEnforce;
+             errnoEnforce(fcntl(fileno, F_FULLFSYNC, 0) != -1, "fcntl failed");
++        }
++        else version (DlangOS)
++        {
++            throw new Exception("File.sync is not supported on DlangOS");
+         }
+         else
+         {
+@@ -1297,6 +1317,11 @@
+         {
+             import core.sys.posix.stdio : fseeko, off_t;
+             alias fseekFun = fseeko;
++        }
++        version (DlangOS)
++        {
++            alias fseekFun = fseek;
++            alias off_t = long;
+         }
+         errnoEnforce(fseekFun(_p.handle, to!off_t(offset), origin) == 0,
+                 "Could not seek in file `"~_name~"'");
+@@ -1355,6 +1380,7 @@
+             import core.sys.posix.stdio : ftello;
+             immutable result = ftello(cast(FILE*) _p.handle);
+         }
++        version (DlangOS) immutable result = ftell(cast(FILE*) _p.handle);
+         errnoEnforce(result != -1,
+                 "Query ftell() failed for file `"~_name~"'");
+         return result;
+@@ -1500,6 +1526,8 @@
+             wenforce(lockImpl!LockFileEx(start, length, type),
+                     "Could not set lock for file `"~_name~"'");
+         }
++        else version (DlangOS)
++            throw new Exception("File locking is not supported on DlangOS");
+         else
+             static assert(false);
+     }
+@@ -1545,6 +1573,8 @@
+             wenforce(res, "Could not set lock for file `"~_name~"'");
+             return true;
+         }
++        else version (DlangOS)
++            throw new Exception("File locking is not supported on DlangOS");
+         else
+             static assert(false);
+     }
+@@ -1571,6 +1601,8 @@
+             wenforce(lockImpl!UnlockFileEx(start, length),
+                 "Could not remove lock for file `"~_name~"'");
+         }
++        else version (DlangOS)
++            throw new Exception("File locking is not supported on DlangOS");
+         else
+             static assert(false);
+     }
+@@ -5751,6 +5783,10 @@
+                     StdioException();
+                 return buf.length;
+             }
++            else version (DlangOS)
++            {
++                throw new Exception("Wide input is not supported on DlangOS");
++            }
+             else
+             {
+                 static assert(0);
+@@ -5851,6 +5887,10 @@
+                     StdioException();
+                 return buf.length;
+             }
++            else version (DlangOS)
++            {
++                throw new Exception("Wide input is not supported on DlangOS");
++            }
+             else
+             {
+                 static assert(0);

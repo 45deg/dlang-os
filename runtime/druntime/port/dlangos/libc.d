@@ -1,8 +1,8 @@
 /// Supply the freestanding C services needed by druntime startup: allocation, serial output, strings and errno.
-/// malloc/free manage a process-local list; exit ends the process. Unsupported C APIs have no definitions.
+/// Stream orientation and closure are checked before serial writes. malloc/free manage a process-local list; exit ends the process. Unsupported C APIs have no definitions.
 module dlangos.libc;
 
-import dlangos.cabi : FILE, EINVAL, ENOMEM;
+import dlangos.cabi : FILE, EINVAL, ENOMEM, EBADF, EIO, EILSEQ, EOF;
 import core.stdc.stdarg : va_list, va_start, va_end, va_arg;
 import user_abi : Call, userHeapBase, userHeapLimitBytes, userHeapInitialBytes, callError;
 import user_api : call, send, exitApp;
@@ -18,7 +18,7 @@ extern(C) __gshared FILE* stdout = &outputFile, stderr = &errorFile, stdin = &in
 
 extern(C) nothrow @nogc:
 int* __errno_location() { return &errorNumber; }
-ref int errno() { return errorNumber; }
+ref int errno() @safe { return errorNumber; }
 
 void* malloc(size_t size)
 {
@@ -106,21 +106,23 @@ int isdigit(int c) { return c >= '0' && c <= '9'; }
 char* strerror(int code) { return cast(char*) "DlangOS C service error"; }
 int fflush(FILE* stream)
 {
-    if (stream is null || stream is stdout || stream is stderr) return 0; // Serial writes are synchronous.
-    errorNumber = EINVAL; return -1;
+    if (stream is null) return 0; // No pending buffers; serial writes are synchronous.
+    return validOutput(stream) ? 0 : EOF;
 }
 size_t fwrite(const(void)* data, size_t size, size_t count, FILE* stream)
 {
     if (size == 0 || count == 0) return 0;
-    if ((stream !is stdout && stream !is stderr) || count > size_t.max / size)
-    { errorNumber = EINVAL; return 0; }
+    if (!validOutput(stream)) return 0;
+    if (fwide(stream, -1) > 0 || count > size_t.max / size)
+    { errorNumber = EINVAL; stream.error = 1; return 0; }
     auto bytes = cast(const(char)*) data;
     const length = size * count;
     size_t sent;
     while (sent < length)
     {
         const n = length - sent < 128 ? length - sent : 128;
-        if (send(Call.write, bytes[sent .. sent + n]) == callError) return sent / size;
+        if (send(Call.write, bytes[sent .. sent + n]) == callError)
+        { errorNumber = EIO; stream.error = 1; return sent / size; }
         sent += n;
     }
     return count;
@@ -172,8 +174,58 @@ int fprintf(FILE* stream, const(char)* format, ...)
     return count;
 }
 
-noreturn onOutOfMemoryError(void*, string, size_t)
+// The startup-only archive uses this fallback; the Phobos build links core.exception.
+import ldc.attributes : weak;
+@weak noreturn onOutOfMemoryError(void*, string, size_t)
 {
     send(Call.write, "D runtime allocation failed.\n");
     exitApp();
+}
+
+// Streams begin unoriented. Byte and wide output choose their orientation once.
+int fwide(FILE* stream, int mode)
+{
+    if (!validOutput(stream)) return 0;
+    if (stream.orientation == 0 && mode != 0) stream.orientation = mode > 0 ? 1 : -1;
+    return stream.orientation;
+}
+
+private bool validOutput(FILE* stream)
+{
+    if ((stream !is stdout && stream !is stderr) || stream.closed)
+    { errorNumber = EBADF; return false; }
+    return true;
+}
+
+int fputc(int value, FILE* stream)
+{
+    const byteValue = cast(ubyte) value;
+    return fwrite(&byteValue, 1, 1, stream) == 1 ? byteValue : EOF;
+}
+
+uint fputwc(dchar value, FILE* stream)
+{
+    if (!validOutput(stream)) return uint.max;
+    if (fwide(stream, 1) < 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff))
+    { errorNumber = EILSEQ; stream.error = 1; return uint.max; }
+    char[4] bytes;
+    size_t length;
+    if (value <= 0x7f) { bytes[0] = cast(char) value; length = 1; }
+    else
+    {
+        length = value <= 0x7ff ? 2 : value <= 0xffff ? 3 : 4;
+        auto remaining = cast(uint) value;
+        foreach_reverse (i; 1 .. length) { bytes[i] = cast(char) (0x80 | (remaining & 0x3f)); remaining >>= 6; }
+        bytes[0] = cast(char) ((length == 2 ? 0xc0 : length == 3 ? 0xe0 : 0xf0) | remaining);
+    }
+    if (send(Call.write, bytes[0 .. length]) == callError)
+    { errorNumber = EIO; stream.error = 1; return uint.max; }
+    return value;
+}
+
+int fclose(FILE* stream)
+{
+    if (!validOutput(stream)) return EOF;
+    stream.closed = true;
+    return 0;
 }
