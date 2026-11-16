@@ -4,6 +4,8 @@ module file_api;
 enum fileLimit = 16;
 enum maxNameBytes = 24;
 enum maxFileBytes = 16 * 1024;
+// Keep the existing GUI/document ABI small; ELF files use the larger filesystem limit.
+enum maxStoredFileBytes = 1024 * 1024;
 
 enum FsResult { ok, unavailable, notFound, invalidName, tooLarge, full, ioError, conflict }
 

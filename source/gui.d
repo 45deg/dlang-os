@@ -303,6 +303,9 @@ private ulong accessFile(ref const AddressSpace space, ulong address, bool write
     if (write)
         return savedVersion | (cast(ulong) stored.slot << 32) | stored.sequence;
 
+    // The document ABI remains 16 KiB even when the volume stores larger ELF files.
+    if (content.length > transfer.data.length)
+        return FsResult.tooLarge;
     request.fileVersion = stored;
     request.length = cast(uint) content.length;
     if (!copyToUser(space, address, (cast(const(char)*) request)[0 .. FileRequest.sizeof])

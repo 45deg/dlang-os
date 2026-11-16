@@ -27,7 +27,7 @@ D_APP_ELFS := build/apps/d_init.elf build/apps/d_heap.elf build/apps/d_exception
               $(PHOBOS_APP_ELFS)
 BUILTIN_GUI_ELFS := $(addprefix build/apps/,$(addsuffix .elf,calc game monitor files editor))
 GUI_APP_ELFS := $(BUILTIN_GUI_ELFS) build/apps/counter.elf
-APP_ELFS := build/apps/gui_close.elf build/apps/sleep.elf build/apps/vm.elf build/apps/hello.elf $(GUI_APP_ELFS) $(D_APP_ELFS)
+APP_ELFS := build/apps/file_limits.elf build/apps/gui_close.elf build/apps/sleep.elf build/apps/vm.elf build/apps/hello.elf $(GUI_APP_ELFS) $(D_APP_ELFS)
 GUI_COMMON := apps/builtin/gui_main.d apps/builtin/app_files.d apps/user_api.d \
               source/gui_abi.d source/file_api.d source/app_registry.d source/desktop_theme.d source/graphics.d source/numbers.d source/runtime.d
 GUI_INPUTS := $(GUI_COMMON) source/user_abi.d source/font.d source/ps2.d $(FONT_ATLASES) apps/app.ld Makefile
@@ -75,10 +75,10 @@ $(D_APP_ELFS): $(D_APP_RUNTIME) $(D_APP_UNWIND) apps/app.ld Makefile
 	mkdir -p "$(@D)"
 	"$(LDC)" $(FULL_D_FLAGS) -Iapps/experiments $(APP_IMPORT_FLAGS) $(APP_LINK_FLAGS) -L=--entry=main -of="$@" \
 		$(filter-out $(D_APP_RUNTIME),$(filter %.d,$^)) $(D_APP_RUNTIME) $(filter %.o,$^)
-	@test "$$(wc -c < "$@")" -le 16384 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
+	@test "$$(wc -c < "$@")" -le 1048576 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
 
 # Compile the Phobos sources bundled with LDC into ELF objects for the application target.
-# Optimize SHA for size so the unrolled implementation fits within DlangFS's 16 KiB limit.
+# Keep SHA small enough for existing 16 KiB DlangFS3 volumes.
 build/apps/phobos/digest/sha.o: FULL_D_FLAGS := $(filter-out -O2,$(FULL_D_FLAGS)) -Os
 
 build/apps/phobos/%.o: $(PHOBOS_IMPORT)/std/%.d apps/runtime/object.d apps/runtime/d_allocation.d Makefile
@@ -90,16 +90,18 @@ $(D_APP_UNWIND): apps/runtime/d_unwind.d $(D_APP_RUNTIME) Makefile
 	mkdir -p "$(@D)"
 	"$(LDC)" $(FULL_D_FLAGS) -fno-moduleinfo -c -of="$@" "$<"
 
+build/apps/file_limits.elf: apps/experiments/file_limits.d $(BETTERC_APP_SUPPORT) source/gui_abi.d source/file_api.d
+
 build/apps/gui_close.elf: apps/experiments/gui_close.d $(BETTERC_APP_SUPPORT) source/gui_abi.d source/file_api.d
 build/apps/sleep.elf: apps/experiments/sleep.d $(BETTERC_APP_SUPPORT)
 build/apps/vm.elf: apps/experiments/vm.d $(BETTERC_APP_SUPPORT)
 build/apps/hello.elf: apps/experiments/hello.d $(BETTERC_APP_SUPPORT)
 build/apps/counter.elf: apps/counter/counter.d $(BETTERC_APP_SUPPORT) source/gui_abi.d source/file_api.d
 
-build/apps/gui_close.elf build/apps/sleep.elf build/apps/vm.elf build/apps/hello.elf build/apps/counter.elf:
+build/apps/file_limits.elf build/apps/gui_close.elf build/apps/sleep.elf build/apps/vm.elf build/apps/hello.elf build/apps/counter.elf:
 	mkdir -p "$(@D)"
 	"$(LDC)" $(APP_D_FLAGS) $(APP_LINK_FLAGS) -betterC -of="$@" "$<" apps/user_api.d
-	@test "$$(wc -c < "$@")" -le 16384 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
+	@test "$$(wc -c < "$@")" -le 1048576 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
 
 build/apps/calc.elf: GUI_VERSION := CalcApp
 build/apps/calc.elf: apps/builtin/calculator.d
@@ -110,7 +112,7 @@ build/apps/monitor.elf: apps/builtin/monitor.d
 build/apps/files.elf: GUI_VERSION := FilesApp
 build/apps/files.elf: apps/builtin/file_browser.d
 build/apps/editor.elf: GUI_VERSION := EditorApp
-# Keep the Editor ELF within DlangFS's 16 KiB limit.
+# Keep Editor compatible with existing 16 KiB DlangFS3 volumes.
 build/apps/editor.elf: APP_D_FLAGS := $(filter-out -O2,$(APP_D_FLAGS)) -Oz
 build/apps/editor.elf: apps/builtin/editor.d
 
@@ -118,7 +120,7 @@ $(BUILTIN_GUI_ELFS): $(GUI_INPUTS)
 	mkdir -p "$(@D)"
 	"$(LDC)" $(APP_D_FLAGS) $(APP_LINK_FLAGS) -betterC -d-version=GuiApp -d-version=$(GUI_VERSION) \
 		-Iapps/builtin -Jassets/fonts -of="$@" $(GUI_COMMON) $(filter-out $(GUI_INPUTS),$^)
-	@test "$$(wc -c < "$@")" -le 16384 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
+	@test "$$(wc -c < "$@")" -le 1048576 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
 
 $(KERNEL): build/kernel.elf
 	mkdir -p "$(@D)"
@@ -169,3 +171,37 @@ build/tests/calendar-test: tests/calendar_test.d source/calendar.d Makefile
 test: check-ovmf all apps build/tests/calendar-test
 	build/tests/calendar-test
 	"$(PYTHON)" tests/qemu_shell.py "$(QEMU)" $(QEMU_FLAGS) -display none
+
+# Standard druntime migration, isolated from the existing minimal application runtime.
+# Fetch explicitly; normal builds/tests never download or consume host runtime libraries.
+DRUNTIME_ARCHIVE ?=
+DRUNTIME_SOURCE := build/druntime/upstream/runtime/druntime/src
+.PHONY: druntime-fetch druntime-bootstrap druntime-startup druntime-audit test-druntime
+DRUNTIME_CC ?= clang
+
+druntime-fetch:
+	"$(PYTHON)" tools/druntime.py fetch $(if $(DRUNTIME_ARCHIVE),--archive "$(DRUNTIME_ARCHIVE)")
+
+druntime-bootstrap:
+	"$(PYTHON)" tools/druntime.py build --ldc "$(LDC)"
+	"$(LDC)" -conf=build/druntime/empty.conf $(APP_D_FLAGS) -I$(DRUNTIME_SOURCE) \
+		-fno-moduleinfo $(APP_LINK_FLAGS) -L=-Map=build/druntime/bootstrap/link.map \
+		-of=build/druntime/bootstrap/druntime_bootstrap.elf \
+		apps/experiments/druntime_bootstrap.d apps/user_api.d \
+		build/druntime/bootstrap/libdruntime-bootstrap.a
+	@test "$$(wc -c < build/druntime/bootstrap/druntime_bootstrap.elf)" -le 1048576
+
+druntime-audit:
+	"$(PYTHON)" tools/druntime.py audit --ldc "$(LDC)"
+
+druntime-startup:
+	"$(PYTHON)" tools/druntime.py startup --ldc "$(LDC)" --cc "$(DRUNTIME_CC)"
+
+test-druntime: check-ovmf all druntime-bootstrap druntime-startup
+	"$(PYTHON)" tests/druntime_qemu.py "$(QEMU)" $(QEMU_FLAGS) -display none
+
+.PHONY: druntime-package
+druntime-package: druntime-bootstrap druntime-startup
+	tar -czf build/druntime/druntime-bootstrap-bundle.tar.gz -C build/druntime \
+		bootstrap startup ldc-source.tar.gz upstream/manifest.json \
+		-C "$(CURDIR)" runtime/druntime/patches runtime/druntime/port runtime/druntime/app.ld

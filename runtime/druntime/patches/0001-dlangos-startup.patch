@@ -1,0 +1,396 @@
+--- a/core/internal/abort.d
++++ b/core/internal/abort.d
+@@ -41,6 +41,14 @@
+             }
+         }
+     }
++    else version (DlangOS)
++    {
++        import core.stdc.stdio : fwrite, stderr;
++        void writeStr(scope const(char)[][] m...) @nogc nothrow @trusted
++        {
++            foreach (s; m) fwrite(s.ptr, 1, s.length, stderr);
++        }
++    }
+     else
+         static assert(0, "Unsupported OS");
+ 
+--- a/core/stdc/config.d
++++ b/core/stdc/config.d
+@@ -137,6 +137,17 @@
+     alias cpp_longlong = __c_longlong;
+     alias cpp_ulonglong = __c_ulonglong;
+ }
++else version (DlangOS)
++{
++    alias c_long = long;
++    alias c_ulong = ulong;
++    alias cpp_long = long;
++    alias cpp_ulong = ulong;
++    enum __c_longlong : long;
++    enum __c_ulonglong : ulong;
++    alias cpp_longlong = __c_longlong;
++    alias cpp_ulonglong = __c_ulonglong;
++}
+ else version (Windows)
+ {
+     enum __c_long  : int;
+--- a/core/stdc/errno.d
++++ b/core/stdc/errno.d
+@@ -13,6 +13,14 @@
+  */
+ 
+ module core.stdc.errno;
++
++// DlangOS: LP64 freestanding C ABI; definitions live in the platform port.
++version (DlangOS)
++{
++    public import dlangos.cabi;
++}
++else
++{
+ 
+ version (OSX)
+     version = Darwin;
+@@ -2558,3 +2566,5 @@
+ {
+     static assert(false, "Unsupported platform");
+ }
++
++}
+--- a/core/stdc/signal.d
++++ b/core/stdc/signal.d
+@@ -13,6 +13,14 @@
+  */
+ 
+ module core.stdc.signal;
++
++// DlangOS: LP64 freestanding C ABI; definitions live in the platform port.
++version (DlangOS)
++{
++    public import dlangos.cabi;
++}
++else
++{
+ 
+ extern (C):
+ nothrow:
+@@ -116,3 +124,5 @@
+ sigfn_t signal(int sig, sigfn_t func);
+ ///
+ int     raise(int sig);
++
++}
+--- a/core/stdc/stddef.d
++++ b/core/stdc/stddef.d
+@@ -34,3 +34,5 @@
+     ///
+     alias wchar_t = dchar;
+ }
++
++version (DlangOS) alias wchar_t = dchar;
+--- a/core/stdc/stdint.d
++++ b/core/stdc/stdint.d
+@@ -13,6 +13,14 @@
+  */
+ 
+ module core.stdc.stdint;
++
++// DlangOS: LP64 freestanding C ABI; definitions live in the platform port.
++version (DlangOS)
++{
++    public import dlangos.cabi;
++}
++else
++{
+ 
+ import core.stdc.config;
+ import core.stdc.stddef; // for wchar_t
+@@ -577,3 +585,5 @@
+ alias INTMAX_C  = _typify!intmax_t ;
+ ///
+ alias UINTMAX_C = _typify!uintmax_t;
++
++}
+--- a/core/stdc/stdio.d
++++ b/core/stdc/stdio.d
+@@ -14,6 +14,14 @@
+  */
+ 
+ module core.stdc.stdio;
++
++// DlangOS: LP64 freestanding C ABI; definitions live in the platform port.
++version (DlangOS)
++{
++    public import dlangos.cabi;
++}
++else
++{
+ 
+ version (OSX)
+     version = Darwin;
+@@ -1999,3 +2007,5 @@
+         SH_DENYNO = _SH_DENYNO, /// deny none mode
+     }
+ }
++
++}
+--- a/core/stdc/stdlib.d
++++ b/core/stdc/stdlib.d
+@@ -13,6 +13,14 @@
+  */
+ 
+ module core.stdc.stdlib;
++
++// DlangOS: LP64 freestanding C ABI; definitions live in the platform port.
++version (DlangOS)
++{
++    public import dlangos.cabi;
++}
++else
++{
+ 
+ import core.stdc.config;
+ public import core.stdc.stddef; // for wchar_t
+@@ -258,3 +266,5 @@
+     ///
+     long  _wcstoi64(scope inout(wchar)*, scope inout(wchar)**,int);
+ }
++
++}
+--- a/core/stdc/time.d
++++ b/core/stdc/time.d
+@@ -14,6 +14,14 @@
+  */
+ 
+ module core.stdc.time;
++
++// DlangOS: LP64 freestanding C ABI; definitions live in the platform port.
++version (DlangOS)
++{
++    public import dlangos.cabi;
++}
++else
++{
+ 
+ version (Posix)
+     public import core.sys.posix.stdc.time;
+@@ -81,3 +89,5 @@
+     ///
+     @system size_t  strftime(scope char* s, size_t maxsize, const scope char* format, const scope tm* timeptr); // @system: MT-Safe env locale
+ }
++
++}
+--- a/core/stdc/wchar_.d
++++ b/core/stdc/wchar_.d
+@@ -14,6 +14,14 @@
+ 
+ module core.stdc.wchar_;
+ 
++// DlangOS: LP64 freestanding C ABI; definitions live in the platform port.
++version (DlangOS)
++{
++    public import dlangos.cabi;
++}
++else
++{
++
+ import core.stdc.config;
+ import core.stdc.stdarg; // for va_list
+ import core.stdc.stdio;  // for FILE, not exposed per spec
+@@ -400,3 +408,5 @@
+ size_t mbsrtowcs(wchar_t* dst, const scope char** src, size_t len, mbstate_t* ps);
+ ///
+ size_t wcsrtombs(char* dst, const scope wchar_t** src, size_t len, mbstate_t* ps);
++
++}
+--- a/core/time.d
++++ b/core/time.d
+@@ -335,6 +335,10 @@
+     processCPUTime = 4,
+     second = 6,
+     threadCPUTime = 7,
++}
++else version (DlangOS) enum ClockType
++{
++    normal = 0, coarse = 2, precise = 3, second = 6
+ }
+ else version (WASI) enum ClockType
+ {
+--- a/rt/dmain2.d
++++ b/rt/dmain2.d
+@@ -18,7 +18,7 @@
+ import core.stdc.stdlib : alloca, EXIT_FAILURE, EXIT_SUCCESS, free, malloc, realloc;
+ import core.stdc.string : strerror;
+ import rt.config : rt_cmdline_enabled, rt_configOption;
+-import rt.memory;
++version (DlangOS) {} else import rt.memory;
+ import rt.sections;
+ 
+ version (Windows)
+@@ -98,6 +98,7 @@
+  * Keep track of how often rt_init/rt_term were called.
+  */
+ private shared size_t _initCount;
++version (DlangOS) private __gshared void[] mainThreadTls;
+ 
+ /**********************************************
+  * Initialize druntime.
+@@ -106,6 +107,19 @@
+  */
+ extern (C) int rt_init()
+ {
++    version (DlangOS)
++    {
++        // Static startup stage: no GC, OS threads or monitors are linked yet.
++        if (atomicOp!"+="(_initCount, 1) > 1) return 1;
++        initSections();
++        mainThreadTls = initTLSRanges();
++        rt_moduleCtor();
++        rt_moduleTlsCtor();
++        return 1;
++    }
++    else
++    {
++
+     /* @@BUG 11380 @@ Need to synchronize rt_init/rt_term calls for
+        version (Shared) druntime, because multiple C threads might
+        initialize different D libraries without knowing about the
+@@ -145,6 +159,8 @@
+     _d_critical_term();
+     _d_monitor_staticdtor();
+     return 0;
++
++    }
+ }
+ 
+ /**********************************************
+@@ -152,6 +168,20 @@
+  */
+ extern (C) int rt_term()
+ {
++    version (DlangOS)
++    {
++        if (atomicLoad!(MemoryOrder.raw)(_initCount) == 0) return 0;
++        if (atomicOp!"-="(_initCount, 1)) return 1;
++        rt_moduleTlsDtor();
++        rt_moduleDtor();
++        finiTLSRanges(mainThreadTls);
++        mainThreadTls = null;
++        finiSections();
++        return 1;
++    }
++    else
++    {
++
+     if (atomicLoad!(MemoryOrder.raw)(_initCount) == 0) return 0; // was never initialized
+     if (atomicOp!"-="(_initCount, 1)) return 1;
+ 
+@@ -175,6 +205,8 @@
+         _d_monitor_staticdtor();
+     }
+     return 0;
++
++    }
+ }
+ 
+ /**
+@@ -349,6 +381,13 @@
+             totalArgsLength += arg.length;
+         }
+     }
++    else version (DlangOS)
++    {
++        // The kernel passes no arguments in this static single-thread ABI.
++        assert(argc == 0 && argv is null);
++        char[][] args;
++        size_t totalArgsLength;
++    }
+     else
+         static assert(0);
+ 
+@@ -406,6 +445,17 @@
+ 
+ private extern (C) int _d_run_main2(char[][] args, size_t totalArgsLength, MainFunc mainFunc)
+ {
++    version (DlangOS)
++    {
++        // The unit-test runner and exception trapping need later runtime subsystems.
++        _d_args = cast(string[])args;
++        if (!rt_init()) return EXIT_FAILURE;
++        const result = mainFunc(args);
++        return rt_term() ? result : EXIT_FAILURE;
++    }
++    else
++    {
++
+     int result;
+ 
+     version (FreeBSD) version (D_InlineAsm_X86)
+@@ -601,6 +651,8 @@
+     }
+ 
+     return result;
++
++    }
+ }
+ 
+ private void formatThrowable(Throwable t, scope void delegate(in char[] s) nothrow sink)
+--- a/rt/minfo.d
++++ b/rt/minfo.d
+@@ -367,9 +367,22 @@
+                                 {
+                                 case abort:
+ 
++                                    version (DlangOS)
++                                    {
++                                        // No exception allocator/unwinder yet. Diagnose the real cycle and terminate.
++                                        import core.stdc.stdlib : abort;
++                                        buildCycleMessage(idx, midx, (string x) {
++                                            fprintf(cast()stderr, "%.*s", cast(int)x.length, x.ptr);
++                                        });
++                                        abort();
++                                        assert(0);
++                                    }
++                                    else
++                                    {
+                                     string errmsg = "";
+                                     buildCycleMessage(idx, midx, (string x) {errmsg ~= x;});
+                                     throw new Error(errmsg, __FILE__, __LINE__);
++                                    }
+                                 case ignore:
+                                     break;
+                                 case print:
+--- a/rt/sections.d
++++ b/rt/sections.d
+@@ -71,6 +71,7 @@
+     public import rt.sections_elf_shared;
+ else version (CRuntime_UClibc)
+     public import rt.sections_elf_shared;
++else version (DlangOS) {} // sections_ldc provides the static-image implementation.
+ else
+     static assert(0, "unimplemented");
+ 
+--- a/rt/sections_ldc.d
++++ b/rt/sections_ldc.d
+@@ -77,7 +77,7 @@
+ private:
+     ModuleGroup _moduleGroup;
+ 
+-    import rt.util.container.array;
++    import core.internal.container.array;
+     Array!(void[]) _gcRanges;
+ 
+     version (Solaris)
+@@ -357,6 +357,11 @@
+         debug(PRINTF) printf("Add range %p %d\n", rng ? rng.ptr : cast(void*)0, rng ? rng.length : 0);
+         return rng;
+     }
++    else version (DlangOS)
++    {
++        import dlangos.tls : mainTlsRange;
++        return mainTlsRange();
++    }
+     else static assert(0, "TLS range detection not implemented for this OS.");
+ 
+ }

@@ -1,5 +1,5 @@
 """Boot QEMU to test COM1 in verify_shell and the screen and PS/2 input in verify_desktop.
-Use disposable DlangFS3 disks to test persistence, recovery, unsupported-format rejection, Ring 3 ELFs, the D runtime, Phobos, and window controls.
+Use disposable DlangFS3/4 disks to test persistence, recovery, unsupported-format rejection, Ring 3 ELFs, the D runtime, Phobos, and window controls.
 """
 
 from contextlib import ExitStack, contextmanager
@@ -931,14 +931,17 @@ def verify_large_files(qemu_command, root):
     format_disk(disk)
     large_text = (b"0123456789abcdef\n" * 400)[:6145]
     edited_text = large_text + b"z"
-    binary = bytes(range(256)) * 64
+    binary = bytes(range(256)) * 4096  # Exact 1 MiB volume/application boundary, including lengths > 65535.
 
     with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
         expect_command(console, b"cat removed.txt", b"File not found.\r\n")
         put_file(console, b"large.txt", large_text)
         put_file(console, b"full.bin", binary)
         expect_command(console, b"cat full.bin", b"Binary file. Use get NAME.\r\n")
-        expect_command(console, b"put oversized.bin 16385", b"Specify a byte count from 0 to 16384.\r\n")
+        put_file(console, b"file_limits.elf", (APP_DIRECTORY / "file_limits.elf").read_bytes())
+        expect_command(console, b"run file_limits.elf", b"GUI document size limit preserved.\r\n")
+        expect_file_bytes(console, b"full.bin", binary)
+        expect_command(console, b"put oversized.bin 1048577", b"Specify a byte count from 0 to 1048576.\r\n")
         begin_upload(console, b"large.txt", len(large_text))
         console.send(b"4142\r\n.\r\n")
         expect_equal(console.read_until(PROMPT), b"Invalid hex data or byte count. File was not changed.\r\n")
@@ -987,7 +990,7 @@ def format_disk(path, *options):
 
 def verify_volume_layout(qemu_command, root):
     disk = root / "custom-layout.img"
-    format_disk(disk, "--slots", "3", "--file-bytes", "5000", "--records-lba", "9", "--copy-sectors", "13")
+    format_disk(disk, "--format-version", "3", "--slots", "3", "--file-bytes", "5000", "--records-lba", "9", "--copy-sectors", "13")
     initial = bytearray(disk.read_bytes())
     overwrite = subprocess.run([sys.executable, str(PROJECT / "tools/format-disk.py"), str(disk)],
                                capture_output=True)
@@ -1037,7 +1040,7 @@ def verify_volume_layout(qemu_command, root):
         struct.pack_into("<I", image, 40, checksum)
 
     # Test invalid layout fields separately from checksum mismatches.
-    invalid_layouts = [(8, 4), (16, 0), (16, 17), (20, 16385), (24, 0),
+    invalid_layouts = [(8, 4), (16, 0), (16, 17), (20, 1048577), (24, 0),
                        (24, 0x0fffffff), (28, 1), (32, 99), (44, 1)]
     for index, (offset, value) in enumerate(invalid_layouts + [(40, 0)]):
         image = bytearray(initial)
@@ -1325,7 +1328,7 @@ def main(qemu_command):
         verify_close_deadline(qemu_command, root)
         verify_desktop_clock(qemu_command, root)
 
-    print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, DlangFS3, unsupported-format rejection, persistence, and disk recovery")
+    print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, DlangFS3/4, unsupported-format rejection, persistence, and disk recovery")
 
 
 if __name__ == "__main__":

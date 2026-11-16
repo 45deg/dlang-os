@@ -20,4 +20,5 @@ make run-gui
 - [デスクトップアプリの登録](docs/desktop-apps.md)
 - [DlangFSのディスク形式](docs/dlangfs.md)
 - [アプリ開発とABI](apps/README.md)
+- [標準druntimeの移植基盤とライセンス](docs/druntime.md)
 - [フォントのライセンスと生成手順](assets/fonts/README.md)

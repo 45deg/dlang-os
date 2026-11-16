@@ -4,7 +4,7 @@ module process;
 import address_space : AddressSpace, initPaging, initUserSpace, releaseUserSpace, mapBuiltin, mapUserHeap, resizeHeap, copyFromUser,
     userCodeAddress, userImageEnd, userStackBase, userStackTop, __user_app_start;
 import apic_timer : initTimer, arm, cancel;
-import cpu : readCr3;
+import cpu : readCr3, writeMsr;
 import physical_memory : initPhysicalMemory;
 import clock : milliseconds;
 import privilege : UserFrame, enterUser, initPrivilege, syscallVector, timerVector, userCode, userData;
@@ -254,7 +254,9 @@ bool runNext()
         }
         ++task.info.slices;
         arm();
+        writeMsr(0xc0000100, spaces[slot].threadPointer); // IA32_FS_BASE, per-process main thread.
         enterUser(&task.frame, spaces[slot].cr3, kernelCr3);
+        writeMsr(0xc0000100, 0); // The BetterC kernel has no TLS.
         const timerFired = task.frame.vector == timerVector;
         cancel(timerFired);
         if (!validResume(task.frame))

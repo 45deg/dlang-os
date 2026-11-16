@@ -1,4 +1,4 @@
-/// mount validates the DlangFS3 header and loadEntries selects the valid generation of each file.
+/// mount validates DlangFS3/4 headers and loadEntries selects the valid generation of each file.
 /// commit writes the file data first and publishes its generation number and checksum last.
 module filesystem;
 
@@ -18,28 +18,37 @@ private struct Metadata
     align(1):
     uint sequence;
     uint checksum;
-    ushort length;
+    uint length;
     char[diskNameBytes] name = 0;
 }
 
 private union HeaderSector
 {
     Metadata fields;
+    LegacyMetadata legacy;
     Sector raw;
+}
+
+// Preserve the v3 disk representation; conversion happens only at the sector boundary.
+private struct LegacyMetadata
+{
+    align(1):
+    uint sequence, checksum;
+    ushort length;
+    char[diskNameBytes] name;
 }
 
 private struct Entry
 {
     Metadata fields;
     bool secondCopy;
-    char[maxFileBytes] payload = void;
+    char[maxStoredFileBytes] payload = void;
 }
 
 private enum CopyStatus { blank, invalid, valid, ioError }
 
-static assert(Metadata.sizeof == 34 && Metadata.checksum.offsetof == 4);
-static assert(maxFileBytes % sectorBytes == 0);
-private enum layoutMagic = "DLANGFS3";
+static assert(Metadata.sizeof == 36 && LegacyMetadata.sizeof == 34 && Metadata.checksum.offsetof == 4);
+static assert(maxStoredFileBytes % sectorBytes == 0);
 
 private struct LayoutHeader
 {
@@ -51,10 +60,11 @@ private struct LayoutHeader
 private union LayoutSector { LayoutHeader fields; Sector raw; }
 static assert(LayoutHeader.sizeof == 44 && LayoutHeader.checksum.offsetof == 40);
 private __gshared uint volumeSlots, volumeFileBytes, recordsLba, sectorsPerCopy;
+private __gshared uint volumeFormat;
 private enum uint hashSeed = 2166136261;
 
 private __gshared Entry[fileLimit] entries;
-private __gshared char[maxFileBytes] scratch = void;
+private __gshared char[maxStoredFileBytes] scratch = void;
 private __gshared bool mounted;
 private __gshared ulong changes;
 
@@ -72,7 +82,7 @@ bool mount()
         Sector first;
         if (!candidate.read(0, first)) continue;
         const magic = (cast(const(char)*) first.ptr)[0 .. 8];
-        if (!equal(magic, layoutMagic))
+        if (!equal(magic, "DLANGFS3") && !equal(magic, "DLANGFS4"))
             continue;
         // Avoid choosing a write target by attachment order when several disks could contain DlangFS.
         if (found) return false;
@@ -84,8 +94,8 @@ bool mount()
     if (!readLayout(header)) return false;
     // Use 64-bit arithmetic to check that the layout fits on the selected block device.
     const end = cast(ulong) recordsLba + cast(ulong) volumeSlots * 2 * sectorsPerCopy;
-    if (volumeSlots == 0 || volumeSlots > fileLimit || volumeFileBytes == 0 || volumeFileBytes > maxFileBytes
-        || volumeFileBytes > ushort.max || recordsLba == 0
+    if (volumeSlots == 0 || volumeSlots > fileLimit || volumeFileBytes == 0 || volumeFileBytes > maxStoredFileBytes
+        || (volumeFormat == 3 && volumeFileBytes > ushort.max) || recordsLba == 0
         || sectorsPerCopy < 1 + (volumeFileBytes + sectorBytes - 1) / sectorBytes
         || end > disk.sectorCount || end > 0x1_0000_0000 || !readSector(cast(uint) (end - 1), last))
         return false;
@@ -99,14 +109,18 @@ private bool readLayout(ref const Sector raw)
     header.raw = raw;
     const bytes = (cast(const(char)*) raw.ptr)[0 .. sectorBytes];
     const fields = header.fields;
-    if (!equal(fields.magic[], layoutMagic) || fields.versionNumber != 3
-        || fields.sectorSize != sectorBytes || fields.metadataBytes != Metadata.sizeof
+    const legacy = equal(fields.magic[], "DLANGFS3") && fields.versionNumber == 3;
+    const current = equal(fields.magic[], "DLANGFS4") && fields.versionNumber == 4;
+    if ((!legacy && !current)
+        || fields.sectorSize != sectorBytes
+        || fields.metadataBytes != (legacy ? LegacyMetadata.sizeof : Metadata.sizeof)
         || fields.nameBytes != diskNameBytes
         || fields.checksum != hashBytes(hashBytes(hashSeed, bytes[0 .. 40]), bytes[44 .. $]))
         return false;
     foreach (c; bytes[44 .. $])
         if (c != 0) return false;
     volumeSlots = fields.slots;
+    volumeFormat = fields.versionNumber;
     volumeFileBytes = fields.fileBytes;
     recordsLba = fields.recordsLba;
     sectorsPerCopy = fields.sectorsPerCopy;
@@ -143,7 +157,7 @@ private bool loadEntries()
     return true;
 }
 
-private CopyStatus readCopy(uint lba, out Metadata fields, ref char[maxFileBytes] payload)
+private CopyStatus readCopy(uint lba, out Metadata fields, ref char[maxStoredFileBytes] payload)
 {
     HeaderSector header = void;
     if (!readSector(lba, header.raw))
@@ -151,6 +165,9 @@ private CopyStatus readCopy(uint lba, out Metadata fields, ref char[maxFileBytes
     if (isBlank(header.raw))
         return CopyStatus.blank;
     fields = header.fields;
+    if (volumeFormat == 3)
+        fields = Metadata(header.legacy.sequence, header.legacy.checksum,
+            header.legacy.length, header.legacy.name);
     if (!validMetadata(fields, volumeFileBytes))
         return CopyStatus.invalid;
 
@@ -233,7 +250,7 @@ FsResult save(scope const(char)[] name, scope const(char)[] data,
     }
 
     Metadata next;
-    next.length = cast(ushort) data.length;
+    next.length = cast(uint) data.length;
     foreach (i, char c; name)
         next.name[i] = c;
     return commit(slot, next, data);
@@ -295,7 +312,10 @@ private bool writeCopy(uint lba, ref Metadata fields, scope const(char)[] data)
     HeaderSector header = void;
     header.raw[] = 0;
     fields.checksum = checksum(fields, data);
-    header.fields = fields;
+    if (volumeFormat == 3)
+        header.legacy = LegacyMetadata(fields.sequence, fields.checksum, cast(ushort) fields.length, fields.name);
+    else
+        header.fields = fields;
     return writeSector(lba, header.raw);
 }
 
@@ -348,8 +368,11 @@ private bool isNewer(uint candidate, uint other)
 
 private uint checksum(ref const Metadata fields, scope const(char)[] payload)
 {
+    LegacyMetadata legacy = LegacyMetadata(fields.sequence, fields.checksum, cast(ushort) fields.length, fields.name);
     enum offset = Metadata.checksum.offsetof;
-    const bytes = (cast(const(char)*) &fields)[0 .. Metadata.sizeof];
+    const bytes = volumeFormat == 3
+        ? (cast(const(char)*) &legacy)[0 .. LegacyMetadata.sizeof]
+        : (cast(const(char)*) &fields)[0 .. Metadata.sizeof];
     return hashBytes(hashBytes(hashBytes(hashSeed, bytes[0 .. offset]),
         bytes[offset + uint.sizeof .. $]), payload);
 }

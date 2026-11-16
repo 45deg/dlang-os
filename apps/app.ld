@@ -10,7 +10,7 @@ PHDRS
 
 SECTIONS
 {
-    /* Put the headers in the first page so alignment gaps do not eat into the 16 KiB file limit. */
+    /* Put the headers in the first page so alignment gaps do not waste space in the file. */
     . = 0x00400000 + SIZEOF_HEADERS;
     .text : { *(.text .text.*) *(.rodata .rodata.*) } :code
     .gcc_except_table : {

@@ -34,9 +34,9 @@ make run-gui QEMU_DISPLAY=cocoa,zoom-to-fit=on,full-screen=on
 
 ## ファイルの保存
 
-ファイルは `build/data.img` に保存され、再起動後も開けます。別のイメージを使う場合は `make run-gui DATA_DISK=build/other.img` のように指定します。ルート直下に、1ファイル最大16 KiBのテキストやバイナリを16ファイルまで保存できます。アプリの ELF もこの枠を使います。Editorで開けるのは印字可能ASCIIとLFの文書です。ファイル名は1〜24文字で、英数字、ピリオド、アンダースコア、ハイフンを使えます。先頭にピリオドは使えません。
+ファイルは `build/data.img` に保存され、再起動後も開けます。別のイメージを使う場合は `make run-gui DATA_DISK=build/other.img` のように指定します。ルート直下に、新規ディスクでは1ファイル最大1 MiBのテキストやバイナリを16ファイルまで保存できます。アプリの ELF もこの枠を使います。Editorで開けるのは16 KiB以下の印字可能ASCIIとLFの文書です。ファイル名は1〜24文字で、英数字、ピリオド、アンダースコア、ハイフンを使えます。先頭にピリオドは使えません。
 
-データディスクはDlangFS3のみ対応しています。DlangFS1/2の読み込みと自動移行には対応していません。新しいディスクを使うには `make run-gui DATA_DISK=build/new-data.img` を実行してください。既存のディスクはそのまま残ります。
+データディスクはDlangFS3/4に対応し、新規作成はDlangFS4です。既存のDlangFS3は元の容量のまま使用でき、自動拡張・変換はしません。DlangFS1/2の読み込みと自動移行には対応していません。新しいディスクを使うには `make run-gui DATA_DISK=build/new-data.img` を実行してください。既存のディスクはそのまま残ります。
 
 ## シリアルシェル
 

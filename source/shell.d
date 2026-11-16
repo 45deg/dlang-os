@@ -3,7 +3,7 @@ module shell;
 
 import application : launchFile;
 import cpu : haltCpu;
-import filesystem : capacity, fileSizeLimit, FsResult, FileVersion, errorText, fileLimit, isMounted, isText, maxFileBytes,
+import filesystem : capacity, fileSizeLimit, FsResult, FileVersion, errorText, fileLimit, isMounted, isText, maxStoredFileBytes,
     maxNameBytes, nameAt, open, remove, save, validFilename;
 import boot_info : usableMemoryKiB;
 import physical_memory : freeMemoryKiB;
@@ -121,7 +121,7 @@ struct Shell
 private struct HexUpload
 {
     bool active;
-    private char[maxFileBytes] bytes = void;
+    private char[maxStoredFileBytes] bytes = void;
     private char[maxNameBytes] filename = void;
     private size_t nameLength, expectedBytes, receivedBytes;
     private FileVersion original;
@@ -150,7 +150,7 @@ private struct HexUpload
             count = count[1 .. $];
         if (!parseByteCount(count, expectedBytes))
         {
-            writeText("Specify a byte count from 0 to 16384." ~ newLine);
+            writeText("Specify a byte count from 0 to " ~ maxStoredFileBytes.stringof ~ "." ~ newLine);
             return;
         }
 
@@ -229,7 +229,7 @@ private bool parseByteCount(scope const(char)[] digits, out size_t value)
         if (c < '0' || c > '9')
             return false;
         value = value * 10 + (c - '0');
-        if (value > maxFileBytes)
+        if (value > maxStoredFileBytes)
             return false;
     }
     return true;

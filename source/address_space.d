@@ -1,4 +1,4 @@
-/// Share the boot-time higher-half mapping and map code, stack, and ELF heap per process.
+/// Share the boot-time higher-half mapping and map code, stack, ELF heap, and main-thread TLS per process.
 module address_space;
 
 import boot_info : directMapOffset;
@@ -36,6 +36,7 @@ struct AddressSpace
     private Page* root;
     private ulong heapBytes;
     ulong cr3;
+    ulong threadPointer; // x86-64 variant-II TLS: FS:0 points to this address.
 }
 
 private __gshared Page* kernelRoot;

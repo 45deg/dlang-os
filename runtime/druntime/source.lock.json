@@ -1,0 +1,22 @@
+{
+  "ldc_version": "1.43.0",
+  "repository": "https://github.com/ldc-developers/ldc",
+  "commit": "ad42ba07be491c79a16a04e17ce54c06d8943c03",
+  "druntime_tree": "91f6e6544ed3dddee36d4ff3e77526c2ca2a10e3",
+  "url": "https://codeload.github.com/ldc-developers/ldc/tar.gz/refs/tags/v1.43.0",
+  "sha256": "8516014c839ee4cf1bf2aafa9729637f070e1ddf196f62b6d493b24aa452b7df",
+  "archive_prefix": "ldc-1.43.0/",
+  "modules": [
+    "core/bitop.d",
+    "rt/aApply.d",
+    "rt/aApplyR.d"
+  ],
+  "audit_modules": [
+    "object.d",
+    "rt/dmain2.d",
+    "rt/lifetime.d",
+    "core/internal/gc/impl/conservative/gc.d",
+    "core/thread/osthread.d",
+    "rt/sections.d"
+  ]
+}
