@@ -11,11 +11,11 @@ def main(command):
     with tempfile.TemporaryDirectory(prefix='dlang-phobos-') as directory:
         disk = Path(directory) / 'data.img'
         format_disk(disk)
-        with boot(command, disk) as (console, _):
+        with boot(command, disk) as console:
             for name in ('phobos_hello', 'phobos_output'):
                 put_file(console, (name + '.elf').encode(), (output / (name + '.elf')).read_bytes())
         # Boot from the saved filesystem, exercising the normal ELF loader and runtime entry.
-        with boot(command, disk) as (console, _):
+        with boot(command, disk) as console:
             initial_memory = free_memory(console)
             expect_command(console, b'run phobos_hello.elf', b'Hello, world!\r\n')
             expected = ('UTF-8: 日本語\r\n' + ('abcdefghijklmnopqrstuvwxyz' * 12)[:300]

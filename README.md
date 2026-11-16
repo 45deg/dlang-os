@@ -7,6 +7,7 @@ Dで実装したx86-64の小さな自作OSです。UEFIで起動し、GUIデス�
 GNU Make、内蔵LLD付きのLDC 1.43.0、`lld-link`、QEMU、x86-64用OVMF、Python 3が必要です。配置やパスの指定は [ビルドとテスト](docs/build.md) を参照してください。
 
 ```sh
+./configure
 make run-gui
 ```
 

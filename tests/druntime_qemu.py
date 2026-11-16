@@ -18,10 +18,10 @@ def main(command):
     with tempfile.TemporaryDirectory(prefix='dlang-druntime-') as directory:
         disk = Path(directory) / 'bootstrap.img'
         format_disk(disk)
-        with boot(command, disk) as (console, _):
+        with boot(command, disk) as console:
             put_file(console, b'bootstrap.elf', elf)
         saved = disk.read_bytes()
-        with boot(command, disk) as (console, _):
+        with boot(command, disk) as console:
             expect_file_bytes(console, b'bootstrap.elf', elf)
             expect_command(console, b'run bootstrap.elf',
                            b'Upstream druntime bootstrap and large ELF passed.\r\n')
@@ -39,7 +39,7 @@ def verify_startup(command):
     with tempfile.TemporaryDirectory(prefix='dlang-startup-') as directory:
         disk = Path(directory) / 'startup.img'
         format_disk(disk)
-        with boot(command, disk) as (console, _):
+        with boot(command, disk) as console:
             initial_memory = free_memory(console)
             for name in ('startup', 'startup-second'):
                 put_file(console, (name + '.elf').encode(), (output / (name + '.elf')).read_bytes())
