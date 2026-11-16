@@ -16,26 +16,18 @@ EFI_SOURCES := $(wildcard boot/*.d) source/boot_info.d source/calendar.d source/
 EFI_D_FLAGS := -mtriple=x86_64-pc-windows-msvc -betterC -O2 -checkaction=halt -Iboot -Isource
 FONT_ATLASES := $(wildcard assets/fonts/*.coverage)
 FONT_LICENSE := assets/fonts/OFL.txt
-PHOBOS_APP_ELFS := build/apps/d_base64.elf build/apps/d_crc.elf build/apps/d_sha.elf
-D_APP_ELFS := build/apps/d_init.elf build/apps/d_heap.elf build/apps/d_exception.elf build/apps/d_array.elf \
-              $(PHOBOS_APP_ELFS)
 BUILTIN_GUI_ELFS := $(addprefix build/apps/,$(addsuffix .elf,calc game monitor files editor))
 GUI_APP_ELFS := $(BUILTIN_GUI_ELFS) build/apps/counter.elf
-APP_ELFS := build/apps/file_limits.elf build/apps/gui_close.elf build/apps/sleep.elf build/apps/vm.elf build/apps/hello.elf $(GUI_APP_ELFS) $(D_APP_ELFS)
+APP_ELFS := build/apps/vm.elf build/apps/hello.elf $(GUI_APP_ELFS)
 GUI_COMMON := apps/builtin/gui_main.d apps/builtin/app_files.d apps/user_api.d \
               source/gui_abi.d source/file_api.d source/app_registry.d source/desktop_theme.d source/graphics.d source/numbers.d source/runtime.d
 GUI_INPUTS := $(GUI_COMMON) source/user_abi.d source/font.d source/ps2.d $(FONT_ATLASES) apps/app.ld Makefile config.mk
 BETTERC_APP_SUPPORT := apps/user_api.d source/user_abi.d apps/app.ld Makefile config.mk
-D_APP_RUNTIME := apps/d_start.d apps/runtime/object.d apps/runtime/d_allocation.d \
-                 apps/user_api.d source/user_abi.d source/runtime.d
-D_APP_UNWIND := build/apps/d_unwind.o
-
 D_FLAGS := -mtriple=x86_64-unknown-none-elf -betterC -O2 -checkaction=halt \
            -relocation-model=static -code-model=kernel -disable-red-zone \
            -mattr=-mmx,-sse,-sse2 -Isource -Jassets/fonts -Jbuild/apps
 APP_D_FLAGS := -mtriple=x86_64-unknown-none-elf -O2 -checkaction=halt \
                -relocation-model=static -disable-red-zone -mattr=-mmx,-sse,-sse2 -Isource -Iapps
-FULL_D_FLAGS := $(APP_D_FLAGS) -Iapps/runtime -fno-moduleinfo-localclasses -exception-model=sjlj
 APP_LINK_FLAGS := -link-internally -defaultlib= -L=-nostdlib -L=--gc-sections \
                   -L=--strip-all -L=-z -L=max-page-size=4096 -L=-T -L=apps/app.ld
 
@@ -54,45 +46,11 @@ INSTALL_QEMU = -- "$(QEMU)" $(QEMU_FLAGS) -display none
 all: $(KERNEL) $(BOOT_EFI) $(ESP)/FONT-LICENSE.txt
 apps: $(APP_ELFS)
 
-# Pass the dependent module first in LDC's registration list to test initialization order.
-build/apps/d_init.elf: apps/experiments/d_init.d apps/experiments/d_init_dependency.d
-build/apps/d_heap.elf: apps/experiments/d_heap.d
-build/apps/d_exception.elf: apps/experiments/d_exception.d
-build/apps/d_array.elf: apps/experiments/d_array.d
-build/apps/d_base64.elf: apps/experiments/d_base64.d build/apps/phobos/base64.o
-build/apps/d_crc.elf: apps/experiments/d_crc.d build/apps/phobos/digest/crc.o build/apps/phobos/ascii.o
-build/apps/d_sha.elf: apps/experiments/d_sha.d build/apps/phobos/digest/sha.o build/apps/phobos/ascii.o
-
-$(PHOBOS_APP_ELFS): APP_IMPORT_FLAGS = -I"$(PHOBOS_IMPORT)"
-
-$(D_APP_ELFS): $(D_APP_RUNTIME) $(D_APP_UNWIND) apps/app.ld Makefile config.mk
-	mkdir -p "$(@D)"
-	"$(LDC)" $(FULL_D_FLAGS) -Iapps/experiments $(APP_IMPORT_FLAGS) $(APP_LINK_FLAGS) -L=--entry=main -of="$@" \
-		$(filter-out $(D_APP_RUNTIME),$(filter %.d,$^)) $(D_APP_RUNTIME) $(filter %.o,$^)
-	@test "$$(wc -c < "$@")" -le 1048576 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }
-
-# Compile the Phobos sources bundled with LDC into ELF objects for the application target.
-# Keep SHA small enough for existing 16 KiB DlangFS3 volumes.
-build/apps/phobos/digest/sha.o: FULL_D_FLAGS := $(filter-out -O2,$(FULL_D_FLAGS)) -Os
-
-build/apps/phobos/%.o: $(PHOBOS_IMPORT)/std/%.d apps/runtime/object.d apps/runtime/d_allocation.d Makefile config.mk
-	mkdir -p "$(@D)"
-	"$(LDC)" $(FULL_D_FLAGS) -I"$(PHOBOS_IMPORT)" -c -of="$@" "$<"
-
-# Build the unwinder separately so LLVM optimization preserves the application's exception edges.
-$(D_APP_UNWIND): apps/runtime/d_unwind.d $(D_APP_RUNTIME) Makefile config.mk
-	mkdir -p "$(@D)"
-	"$(LDC)" $(FULL_D_FLAGS) -fno-moduleinfo -c -of="$@" "$<"
-
-build/apps/file_limits.elf: apps/experiments/file_limits.d $(BETTERC_APP_SUPPORT) source/gui_abi.d source/file_api.d
-
-build/apps/gui_close.elf: apps/experiments/gui_close.d $(BETTERC_APP_SUPPORT) source/gui_abi.d source/file_api.d
-build/apps/sleep.elf: apps/experiments/sleep.d $(BETTERC_APP_SUPPORT)
 build/apps/vm.elf: apps/experiments/vm.d $(BETTERC_APP_SUPPORT)
 build/apps/hello.elf: apps/experiments/hello.d $(BETTERC_APP_SUPPORT)
 build/apps/counter.elf: apps/counter/counter.d $(BETTERC_APP_SUPPORT) source/gui_abi.d source/file_api.d
 
-build/apps/file_limits.elf build/apps/gui_close.elf build/apps/sleep.elf build/apps/vm.elf build/apps/hello.elf build/apps/counter.elf:
+build/apps/vm.elf build/apps/hello.elf build/apps/counter.elf:
 	mkdir -p "$(@D)"
 	"$(LDC)" $(APP_D_FLAGS) $(APP_LINK_FLAGS) -betterC -of="$@" "$<" apps/user_api.d
 	@test "$$(wc -c < "$@")" -le 1048576 || { echo "App exceeds DlangFS file size limit." >&2; exit 1; }

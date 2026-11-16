@@ -13,7 +13,7 @@ GNU Make、内蔵LLD付きの [LDC 1.43.0](https://github.com/ldc-developers/ldc
 make run-gui
 ```
 
-LDCとEFI用リンカーは必須です。LDCはPATH、次に `build/tools/ldc2-1.43.0-*/bin/ldc2` を探します。`lld-link` はPATH、次にRust同梱のものを探します。QEMU、OVMF、Phobosのソース、Clangは検出できなくても設定を生成し、不足項目を表示します。それらを使うターゲットの実行前に設定してください。依存ツールのインストールは行いません。
+LDCとEFI用リンカーは必須です。LDCはPATH、次に `build/tools/ldc2-1.43.0-*/bin/ldc2` を探します。`lld-link` はPATH、次にRust同梱のものを探します。QEMU、OVMF、Clangは検出できなくても設定を生成し、不足項目を表示します。それらを使うターゲットの実行前に設定してください。依存ツールのインストールは行いません。
 
 パスはオプションまたは同名の大文字環境変数で指定できます。
 
@@ -26,8 +26,6 @@ LDCとEFI用リンカーは必須です。LDCはPATH、次に `build/tools/ldc2-
 `config.mk` はGit管理外です。既存ファイルは `--force` を指定したときだけ上書きします。`make LDC=/path/to/ldc2` のようなコマンドライン指定は生成設定より優先されます。以前の `Makefile.local` は読み込みません。そこに独自設定を追加していた場合は、configureのオプションや環境変数へ移してください。利用可能なオプションは `./configure --help` で確認できます。
 
 OVMFはQEMUの `../share/qemu/` とLinuxの一般的な配置先を探します。macOSの表示は `cocoa,zoom-to-fit=on`、その他はQEMUの既定値です。`--qemu-display` で変更できます。
-
-`make apps` のPhobos実験アプリにはLDC付属のソースを使います。公式配布物と配置が異なる場合は `std/base64.d` を含むディレクトリを `--phobos-import` に指定してください。通常の `make` と `make test` には不要です。
 
 ## 残すテスト
 
