@@ -1,4 +1,4 @@
-/* DlangFSに置く静的ELF。d_startに.init_array、d_unwindにSjLj例外テーブルの範囲を渡す。 */
+/* Static ELF for DlangFS. Expose .init_array to d_start and the SjLj exception table bounds to d_unwind. */
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(appMain)
 
@@ -10,7 +10,7 @@ PHDRS
 
 SECTIONS
 {
-    /* ヘッダを最初のページに載せ、16 KiBのファイル上限をアラインメントの空白で消費しない。 */
+    /* Put the headers in the first page so alignment gaps do not eat into the 16 KiB file limit. */
     . = 0x00400000 + SIZEOF_HEADERS;
     .text : { *(.text .text.*) *(.rodata .rodata.*) } :code
     .gcc_except_table : {

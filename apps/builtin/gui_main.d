@@ -1,4 +1,4 @@
-/// デスクトップからイベントを受け取り、対象アプリの状態を更新して描画一覧を送る。
+/// Receive desktop events, update the selected application's state, and submit its draw list.
 module gui_main;
 
 import app_files : updateDisk;

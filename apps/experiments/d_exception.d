@@ -1,4 +1,4 @@
-/// 型の照合、例外の文字列化、関数をまたいだ後始末と未捕捉時の終了を検証する。
+/// Verify type matching, exception formatting, cleanup across calls, and exit on an uncaught exception.
 module d_exception;
 
 import user_abi : Call;

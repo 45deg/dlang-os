@@ -1,4 +1,4 @@
-/// sleep中は実行されず、期限後に再開し、長い待機中でもkillできることを試す。
+/// Verify that a sleeping process stops running, resumes at its deadline, and can be killed during a long wait.
 module sleep_example;
 
 import user_abi : Call;

@@ -1,5 +1,5 @@
-/// LDC 1.43.0のベアメタルアプリ用の暗黙インポート。起動用のModuleInfoと、
-/// 割り当てと例外の型照合に使うTypeInfo、例外のクラス階層と文字列化を定義する。
+/// Implicit import for bare-metal applications built with LDC 1.43.0. Define ModuleInfo for startup,
+/// TypeInfo for allocation and exception matching, and the exception hierarchy and formatting.
 module object;
 
 alias size_t = typeof(int.sizeof);
@@ -92,7 +92,7 @@ class Throwable : Object
             }
             catch (Throwable)
             {
-                // トレースの表示で失敗しても、先に出した例外の説明は残す。
+                // Keep the exception description already printed if formatting the trace fails.
             }
         }
     }
@@ -125,7 +125,7 @@ class Error : Throwable
     }
 }
 
-// 精密GC用のポインタマップを生成しない。
+// Omit pointer maps for precise garbage collection.
 enum immutable(void)* RTInfo(T) = null;
 
 class TypeInfo
@@ -138,7 +138,7 @@ class TypeInfo
     size_t getHash(scope const void* value) @trusted pure nothrow const { return 0; }
 }
 
-// 以下のフィールド順はLDCがELFに出力するTypeInfoのレイアウトに対応する。
+// The following fields match the order LDC emits for TypeInfo in the ELF.
 class TypeInfo_Class : TypeInfo
 {
     byte[] m_init;
@@ -278,7 +278,7 @@ private mixin template ArrayInfo(T)
 
 private template Types(T...) { alias Types = T; }
 
-// 組み込み型はLDCがTypeInfo_<型のマングル名>.__initZを直接参照する。
+// For built-in types, LDC references TypeInfo_<mangled type name>.__initZ directly.
 static foreach (T; Types!(bool, byte, ubyte, short, ushort, int, uint, long, ulong,
         char, wchar, dchar, float, double, real))
 {
@@ -296,6 +296,6 @@ final class TypeInfo_Aya : TypeInfo_Array { mixin ArrayInfo!(immutable char); }
 final class TypeInfo_Ayu : TypeInfo_Array { mixin ArrayInfo!(immutable wchar); }
 final class TypeInfo_Ayw : TypeInfo_Array { mixin ArrayInfo!(immutable dchar); }
 
-// コンパイラが比較できない構造体のTypeInfoに入れるフォールバック。
+// Fallback for TypeInfo of structs the compiler cannot compare.
 bool _xopEquals(in void*, in void*) { assert(0, "No struct equality operation"); }
 int _xopCmp(in void*, in void*) { assert(0, "No struct comparison operation"); }

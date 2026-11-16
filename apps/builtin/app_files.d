@@ -1,4 +1,4 @@
-/// Ring 3アプリからDlangFSを読み書きする。ディレクトリには最後に取得した一覧を使う。
+/// Read and write DlangFS from Ring 3. Use the most recently fetched directory listing.
 module app_files;
 
 import file_api : FsResult, FileVersion, maxFileBytes;

@@ -1,4 +1,4 @@
-/// PhobosでSHA-256を計算し、16進表記で結果をシリアルに出す。
+/// Compute SHA-256 with Phobos and print the result in hexadecimal to the serial console.
 module d_sha;
 
 import std.digest : LetterCase, toHexString;
@@ -16,7 +16,7 @@ private void printSha256(const(ubyte)[] input)
 void main()
 {
     printSha256(cast(const(ubyte)[]) "abc");
-    // 64バイトのブロックを処理した後、残りとパディングを扱う。
+    // Process a full 64-byte block, then handle the remaining bytes and padding.
     enum longInput = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmno"
                    ~ "ijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu";
     printSha256(cast(const(ubyte)[]) longInput);

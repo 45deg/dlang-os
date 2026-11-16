@@ -1,5 +1,5 @@
-/// Ring 3のSjLj例外処理。LLVMが登録するフレームをたどり、selectLandingPadで
-/// catchまたは後始末を選ぶ。後始末からの_Unwind_Resumeは次のフレームへ進む。
+/// Handle SjLj exceptions in Ring 3. Walk the frames registered by LLVM and use
+/// selectLandingPad to choose a catch or cleanup. _Unwind_Resume advances to the next frame after cleanup.
 module d_unwind;
 
 import ldc.llvmasm : __asm;
@@ -9,13 +9,13 @@ import user_api : exitApp, send;
 private struct LandingPad
 {
     uint index;
-    int selector = -1; // -1なら通過、0なら後始末、正の値ならcatchの型番号。
+    int selector = -1; // -1 skips the frame, 0 runs cleanup, and positive values identify catch types.
 }
 
 private alias Personality = extern(C) LandingPad function(const(Frame)*, TypeInfo_Class) nothrow @nogc;
 
-// LDC 1.43.0のx86-64 SjLjコンテキスト。手続き内のスロットは32ビットで、
-// 例外オブジェクトを置くユーザー空間は4 GiB未満にある。
+// x86-64 SjLj context for LDC 1.43.0. Slots within a function are 32 bits wide,
+// and user space for the exception object is below 4 GiB.
 private struct Frame
 {
     Frame* previous;
@@ -58,7 +58,7 @@ private ubyte tableByte(ref const(ubyte)* cursor) nothrow @nogc
     return *cursor++;
 }
 
-// LSDA内のオフセットは、16 KiB制限のあるこのELFで32ビットに収まる。
+// LSDA offsets fit in 32 bits because this ELF is limited to 16 KiB.
 private long tableLeb(ref const(ubyte)* cursor, bool signedValue = false) nothrow @nogc
 {
     long value;
@@ -82,15 +82,15 @@ private bool catches(TypeInfo_Class type, TypeInfo_Class target) nothrow @nogc
     return false;
 }
 
-// LLVMはこの名前のアドレスを登録する。このアプリ内ではSjLjフレームとDの型だけを渡す。
+// LLVM registers this symbol's address. Within this application it receives only the SjLj frame and D type.
 private extern(C) pragma(mangle, "_d_eh_personality")
 LandingPad selectLandingPad(const(Frame)* frame, TypeInfo_Class thrownType) nothrow @nogc
 {
     const(ubyte)* cursor = frame.table;
     const landingBaseEncoding = tableByte(cursor);
-    assert(landingBaseEncoding == 0xff); // LPStart省略
+    assert(landingBaseEncoding == 0xff); // LPStart is omitted.
     const encoding = tableByte(cursor);
-    assert(encoding == 0xff || encoding == 0x03); // 型ポインタ省略、または絶対32ビット値
+    assert(encoding == 0xff || encoding == 0x03); // Type pointers are omitted or encoded as absolute 32-bit values.
 
     const(ubyte)* types;
     if (encoding != 0xff)
@@ -100,14 +100,14 @@ LandingPad selectLandingPad(const(Frame)* frame, TypeInfo_Class thrownType) noth
         types = cursor + offset;
     }
 
-    tableByte(cursor); // SjLjのコールサイト表は、このエンコーディング値によらずULEB128。
+    tableByte(cursor); // SjLj call-site entries use ULEB128 regardless of this encoding byte.
     const callSiteBytes = tableLeb(cursor);
     assert(containsTableBytes(cursor, callSiteBytes));
     const actions = cursor + callSiteBytes;
 
     LandingPad pad;
     long action;
-    // callSiteは1始まり。表のランディングパッド番号は0始まり。
+    // callSite is one-based. Landing pad numbers in the table are zero-based.
     foreach (_; 0 .. frame.callSite)
     {
         assert(cursor < actions);
@@ -120,7 +120,7 @@ LandingPad selectLandingPad(const(Frame)* frame, TypeInfo_Class thrownType) noth
 
     const(ubyte)* entry = actions + action - 1;
     const maxActions = cast(size_t) &__exception_table_end - cast(size_t) actions;
-    // 型が合わず後始末だけがある場合は、型番号0でランディングパッドへ入る。
+    // If no type matches but cleanup is present, enter the landing pad with selector 0.
     foreach (_; 0 .. maxActions)
     {
         assert(entry >= actions);
@@ -146,7 +146,7 @@ LandingPad selectLandingPad(const(Frame)* frame, TypeInfo_Class thrownType) noth
     assert(0, "Cyclic SjLj action table");
 }
 
-// LLVMの組み込みlongjmpと同じ順で、RBP、RSP、ディスパッチ先を復元する。
+// Restore RBP, RSP, and the dispatch target in the same order as LLVM's built-in longjmp.
 private extern(C) noreturn jumpToLandingPad(const(size_t)*) nothrow @nogc
 {
     asm @nogc nothrow { naked; }

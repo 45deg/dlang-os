@@ -1,4 +1,4 @@
-/// Filesの一覧と選択を管理する。refreshでディスクの一覧を読み直し、keyPressとclickで開くファイル名を返す。
+/// Manage the Files listing and selection. refresh rereads the directory, and keyPress and click return the filename to open.
 module file_browser;
 
 import desktop_theme : accent, accentLight, button, ink, labelWithin, muted, paper, toolbar;

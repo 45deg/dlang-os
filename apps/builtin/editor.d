@@ -1,4 +1,4 @@
-/// エディタ1枚分の下書きを保持する。loadDocumentとsaveDocumentでDlangFSに接続する。
+/// Keep the draft for one editor window. loadDocument and saveDocument interface with DlangFS.
 module editor;
 
 import desktop_theme : accent, accentLight, button, centeredText, divider, ink, labelWithin, muted, paper,
@@ -18,7 +18,7 @@ enum EditorClick { none, select, scroll, close }
 struct Editor
 {
     private NameMode nameMode;
-    // 上限を超えたことが分かるよう、無効になる最初の1文字も表示する。
+    // Show the first invalid character so the user can see when the name exceeds the limit.
     private char[maxNameBytes + 1] nameInput = void;
     private size_t inputLength;
     private size_t nameCaret;
@@ -442,7 +442,7 @@ struct Editor
             const previousRow = row;
             advance(document[i], columns, row, column);
             if (previousRow == targetRow && row != previousRow)
-                return i + 1; // 自動折り返しの行末
+                return i + 1; // End of a soft-wrapped line.
         }
         return length;
     }

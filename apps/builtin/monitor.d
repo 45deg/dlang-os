@@ -1,4 +1,4 @@
-/// 起動時の空きメモリとスケジューラの統計を、Monitorウィンドウの表に描く。
+/// Draw boot-time free memory and scheduler statistics in the Monitor window.
 module monitor;
 
 import desktop_theme : accent, accentLight, divider, ink, labelWithin, muted, paper, toolbar;

@@ -1,4 +1,4 @@
-/// 終了要求と未保存通知の競合を再現する。publish値でテストへ到達点を知らせる。
+/// Reproduce a race between a close request and a dirty-state notification. Publish milestones for the test.
 module gui_close;
 
 import gui_abi : GuiEvent, GuiInput, GuiFrame;
@@ -29,12 +29,12 @@ extern(C) noreturn appMain() nothrow @nogc
                 call(Call.guiPresent, cast(ulong) frame);
                 call(Call.publish, 2);
                 call(Call.sleep, 1500);
-                call(Call.publish, 3); // 未保存通知の後なら終了猶予を越えて生存する。
+                call(Call.publish, 3); // The dirty notification lets the app survive past the close deadline.
             }
             else
             {
                 call(Call.sleep, 1500);
-                call(Call.publish, 5); // 保存済みのまま無応答なら、ここへ到達する前に回収される。
+                call(Call.publish, 5); // A clean, unresponsive app is reaped before reaching this point.
             }
         }
         if (input.event == GuiEvent.key && input.key == 10)

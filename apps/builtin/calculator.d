@@ -1,4 +1,4 @@
-/// マウスのキーとキーボードから四則演算を行う。値は小数6桁の固定小数点で保持する。
+/// Evaluate arithmetic from on-screen buttons or keyboard input using six decimal places of fixed-point precision.
 module calculator;
 
 import desktop_theme : accent, centeredText, divider, ink, muted, paper, toolbar, warning;
@@ -149,7 +149,7 @@ struct Calculator
             case '+': value = result + right; break;
             case '-': value = result - right; break;
             case '*':
-                // 整数部と小数部に分け、スケール済みの値同士の直接積を避ける。
+                // Split the operands into integer and fractional parts to avoid multiplying two scaled values directly.
                 value = (result / scale) * right + (result % scale) * (right / scale)
                     + (result % scale) * (right % scale) / scale;
                 break;

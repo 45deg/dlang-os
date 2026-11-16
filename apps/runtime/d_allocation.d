@@ -1,4 +1,4 @@
-/// ELFプロセス専用のヒープ。newと配列の追加・複製・連結を処理し、配列キャストでは領域を共有する。
+/// Manage the heap for an ELF process. Handle new, array append, duplication, and concatenation. Array casts share storage.
 module d_allocation;
 
 import core.stdc.string : memcpy;
@@ -9,18 +9,18 @@ import user_abi : userHeapInitialBytes, callError;
 
 private __gshared size_t heapUsed;
 private __gshared size_t heapCommitted = userHeapInitialBytes;
-private enum classAlignment = 16; // x86-64でLDCがヒープ上のクラスに使うアライメント。
+private enum classAlignment = 16; // Alignment LDC uses for heap-allocated classes on x86-64.
 
 private struct ArrayBlock
 {
     ArrayBlock* next;
     void* data;
-    size_t used, capacity; // バイト数
+    size_t used, capacity; // Byte counts.
 }
 
 private __gshared ArrayBlock* arrays;
 
-// Dのpureな関数からもnewと~=を使える。ここで隠す状態は、このプロセスのアロケータ内部だけ。
+// Allow new and ~= in D pure functions by hiding state private to this process's allocator.
 private alias Allocation = void* function(size_t, size_t) pure;
 private alias TypedAllocation = void* function(const TypeInfo, size_t, bool) pure;
 private alias ArrayGrowth = void* function(void*, size_t, size_t, size_t) pure;
@@ -82,7 +82,7 @@ private void* allocateArray(size_t used, size_t capacity, size_t alignment)
 
 private void* appendSpace(void* data, size_t used, size_t required, size_t alignment)
 {
-    // 短い別スライスからの追加は別ブロックへ移し、すでに初期化された要素を保つ。
+    // When appending through a shorter alias, move to a new block to preserve entries that were already initialized.
     for (auto block = arrays; block !is null; block = block.next)
     {
         if (block.data is data && block.used == used && block.capacity >= required)
@@ -99,7 +99,7 @@ private void* appendSpace(void* data, size_t used, size_t required, size_t align
     return result;
 }
 
-/// LDCはクラスとスカラーの初期化を呼び出し側で行う。
+/// LDC initializes classes and scalars at the call site.
 extern(C) void* _d_allocclass(const TypeInfo_Class info)
 {
     return allocate(info.m_init.length, classAlignment);
@@ -117,7 +117,7 @@ private void* allocateTypedArray(const TypeInfo item, size_t length, bool copyIn
     const bytes = arrayBytes(length, item.tsize);
     auto data = allocateArray(bytes, bytes, item.talign);
     const initial = copyInitializer ? item.initializer() : null;
-    // カーネルがヒープをゼロにする。非ゼロの.initは、静的配列の要素内でも繰り返す。
+    // The kernel zeroes the heap. Repeat nonzero .init values within static array elements as well.
     if (initial.length != 0 && initial.ptr !is null)
         foreach (offset; 0 .. bytes / initial.length)
             memcpy(data + offset * initial.length, initial.ptr, initial.length);
@@ -200,7 +200,7 @@ TTo[] __ArrayCast(TFrom, TTo)(return scope TFrom[] source) pure nothrow @nogc @t
     return (cast(TTo*) source.ptr)[0 .. byteLength / TTo.sizeof];
 }
 
-/// LDCが要素をバイト単位で代入するスライスコピーに使う。長さは要素数で渡される。
+/// Used when LDC copies slice elements bytewise. Lengths are in elements.
 extern(C) void _d_array_slice_copy(void* destination, size_t destinationLength,
     const(void)* source, size_t sourceLength, size_t elementSize) nothrow @nogc
 {
@@ -229,7 +229,7 @@ Result _d_arraycatnTX(Result : T[], T, Parts...)(auto ref Parts parts) pure @tru
         return result;
     }
 
-    // 先に合計を調べ、入力の余剰容量に関わらず結果用に一度だけ領域を確保する。
+    // Compute the total size first and allocate the result once, regardless of spare capacity in the inputs.
     enum maxLength = userHeapLimitBytes / T.sizeof;
     size_t length;
     foreach (ref part; parts)
@@ -263,7 +263,7 @@ Result _d_arraycatnTX(Result : T[], T, Parts...)(auto ref Parts parts) pure @tru
     return result;
 }
 
-// std.exception.enforceは借りたメッセージを例外が保持できるよう、idupで複製する。
+// std.exception.enforce uses idup so the exception can keep a copy of the borrowed message.
 @property immutable(T)[] idup(T)(scope T[] source) pure @trusted
 if (__traits(isPOD, T) && is(T : immutable(T)))
 {

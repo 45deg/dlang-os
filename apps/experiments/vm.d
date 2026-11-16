@@ -1,4 +1,4 @@
-/// 固定32 KiBを越えるBSSと、ヒープの拡張・縮小・メモリ不足時の巻き戻しを検証する。
+/// Verify BSS beyond the old 32 KiB limit, heap growth and shrinkage, and rollback on allocation failure.
 module vm;
 
 import core.volatile : volatileLoad, volatileStore;
@@ -14,7 +14,7 @@ extern(C) noreturn appMain() nothrow @nogc
         check(volatileLoad(&largeBss[i * 4096]) == 0);
         volatileStore(&largeBss[i * 4096], cast(ubyte) (i + 1));
     }
-    // 旧1ページスタックでは収まらないローカル領域も実際に読み書きする。
+    // Read and write a local buffer too large for the old one-page stack.
     ubyte[8192] stack = void;
     foreach (i; 0 .. stack.length)
         volatileStore(&stack[i], cast(ubyte) i);
@@ -31,7 +31,7 @@ extern(C) noreturn appMain() nothrow @nogc
         volatileStore(heap + i * 4096, 99);
     }
     check(call(Call.heapResize, ulong.max) == callError);
-    // テスト用ゲストのRAMは1.5 GiB未満。途中まで割り当てても元の内容は保つ。
+    // The test guest has less than 1.5 GiB of RAM. The original contents must survive a partial allocation.
     check(call(Call.heapResize, userHeapLimitBytes) == callError);
     check(volatileLoad(heap) == 42 && volatileLoad(heap + expanded - 4096) == 99);
     check(call(Call.heapResize, userHeapInitialBytes) == userHeapInitialBytes);

@@ -1,4 +1,4 @@
-/// newと配列の追加を試し、最後にヒープの上限に達したときの終了を確認する。
+/// Exercise new and array append, then verify that the process exits when it exhausts the heap.
 module d_heap;
 
 import core.volatile : volatileLoad, volatileStore;
@@ -80,7 +80,7 @@ void main()
     foreach (i, value; growing)
         assert(value == i);
 
-    // 旧64 KiB上限を越え、ページテーブルの2 MiB境界も越えて拡張する。
+    // Grow past the old 64 KiB limit and across the 2 MiB page-table boundary.
     auto large = newBytes(3 * 1024 * 1024);
     foreach (i; 0 .. large.length / 4096)
     {
@@ -95,7 +95,7 @@ void main()
     assert(inHeap(message.ptr));
     assert(send(Call.write, message) == message.length);
 
-    // 使用済みの領域があるので、ヒープ全体と同じ長さの配列は確保できない。
+    // An array the size of the entire heap cannot fit because some space is already in use.
     auto tooLarge = newBytes(userHeapLimitBytes);
     if (tooLarge.length != 0)
         send(Call.write, "Unexpected successful allocation.\n");

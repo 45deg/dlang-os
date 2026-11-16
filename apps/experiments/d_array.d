@@ -1,4 +1,4 @@
-/// 配列キャストの領域共有と連結の独立性を検証し、最後に端数のあるキャストを試す。
+/// Check that array casts share storage and concatenation creates independent storage, then try a cast with a partial element.
 module d_array;
 
 import user_abi : Call;

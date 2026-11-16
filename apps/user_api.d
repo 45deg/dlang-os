@@ -1,4 +1,4 @@
-/// 独立したDアプリからカーネルのINT 0x80を呼ぶ。
+/// Invoke the kernel's INT 0x80 interface from a standalone D application.
 module user_api;
 
 import ldc.llvmasm : __asm;

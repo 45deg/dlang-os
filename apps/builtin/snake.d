@@ -1,4 +1,4 @@
-/// スネークの盤面と進行状態を保持する。advanceで1マス進み、drawで窓に描画する。
+/// Track the Snake board and game state. advance moves one cell and draw renders the window.
 module snake;
 
 import desktop_theme : button, centeredText, ink, muted, paper, toolbar;
@@ -67,7 +67,7 @@ struct Snake
         return phase == Phase.playing;
     }
 
-    /// 画面の手前から外れたゲームは一時停止し、復帰はプレイヤーが選ぶ。
+    /// Pause when the window loses focus and let the player choose when to resume.
     bool advance(ulong now, bool hasFocus)
     {
         if (phase != Phase.playing)
@@ -138,7 +138,7 @@ struct Snake
 
         const next = cast(ushort) (y * columns + x);
         const grows = next == food;
-        // 食べない回は尾が先へ動くため、現在の尾のマスへ進んでも衝突しない。
+        // On moves without food, the tail vacates its current cell, so moving there does not collide.
         foreach (cell; segments[0 .. (grows ? length : length - 1)])
             if (cell == next)
             {

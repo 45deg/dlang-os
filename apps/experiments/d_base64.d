@@ -1,4 +1,4 @@
-/// Phobosでバイト列をBase64に変換し、結果をシリアルに出す。
+/// Encode bytes as Base64 with Phobos and print the result to the serial console.
 module d_base64;
 
 import std.base64 : Base64;

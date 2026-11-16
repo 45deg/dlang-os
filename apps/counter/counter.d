@@ -1,4 +1,4 @@
-/// Counterは共通GUI APIで窓を作り、入力・描画を交換する。値は50 msごとに進める。
+/// Create the Counter window through the shared GUI API, handle input, and submit draw lists. Increment every 50 ms.
 module counter;
 
 import gui_abi : GuiEvent, GuiInput, GuiFrame, DrawCommand;

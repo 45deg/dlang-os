@@ -1,4 +1,4 @@
-/// PhobosでCRC-32を計算し、通常の16進表記で結果をシリアルに出す。
+/// Compute CRC-32 with Phobos and print the result in hexadecimal to the serial console.
 module d_crc;
 
 import std.digest.crc : crc32Of, crcHexString;

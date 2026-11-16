@@ -1,4 +1,4 @@
-/// ELFのデータとゼロ初期化領域を使い、シリアルへ1行出して終了する例。
+/// Exercise initialized and zero-initialized ELF data, print one line to the serial console, and exit.
 module hello;
 
 import core.volatile : volatileLoad, volatileStore;

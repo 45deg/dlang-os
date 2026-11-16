@@ -1,4 +1,4 @@
-/// d_initより先に共有コンストラクタで初期値を設定する。
+/// Set the initial value in a shared constructor before d_init runs.
 module d_init_dependency;
 
 shared uint initialValue;
