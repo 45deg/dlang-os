@@ -1,4 +1,4 @@
-/// Read the DlangFS layout from its header and retain two generations per file. Fixed layouts keep v1 and v2 readable.
+/// mount validates the DlangFS3 header and loadEntries selects the valid generation of each file.
 /// commit writes the file data first and publishes its generation number and checksum last.
 module filesystem;
 
@@ -28,18 +28,6 @@ private union HeaderSector
     Sector raw;
 }
 
-private struct LegacyRecord
-{
-    Metadata fields;
-    char[sectorBytes - Metadata.sizeof] payload;
-}
-
-private union LegacySector
-{
-    LegacyRecord record;
-    Sector raw;
-}
-
 private struct Entry
 {
     Metadata fields;
@@ -50,15 +38,7 @@ private struct Entry
 private enum CopyStatus { blank, invalid, valid, ioError }
 
 static assert(Metadata.sizeof == 34 && Metadata.checksum.offsetof == 4);
-static assert(LegacyRecord.sizeof == sectorBytes && maxFileBytes % sectorBytes == 0);
-private enum legacyMagic = "DLANGFS1";
-private enum currentMagic = "DLANGFS2";
-// Read existing v1 and v2 disks with their original layouts even if API limits change.
-private enum uint oldFileSlots = 16;
-private enum uint oldFileBytes = 16 * 1024;
-private enum uint migrationMarkerLba = 33;
-private enum uint oldRecordsLba = 34;
-private enum uint oldSectorsPerCopy = 33;
+static assert(maxFileBytes % sectorBytes == 0);
 private enum layoutMagic = "DLANGFS3";
 
 private struct LayoutHeader
@@ -92,7 +72,7 @@ bool mount()
         Sector first;
         if (!candidate.read(0, first)) continue;
         const magic = (cast(const(char)*) first.ptr)[0 .. 8];
-        if (!equal(magic, legacyMagic) && !equal(magic, currentMagic) && !equal(magic, layoutMagic))
+        if (!equal(magic, layoutMagic))
             continue;
         // Avoid choosing a write target by attachment order when several disks could contain DlangFS.
         if (found) return false;
@@ -101,15 +81,7 @@ bool mount()
         found = true;
     }
     if (!found) return false;
-    if (hasMagic(header, currentMagic) || hasMagic(header, legacyMagic))
-    {
-        volumeSlots = oldFileSlots;
-        volumeFileBytes = oldFileBytes;
-        recordsLba = oldRecordsLba;
-        sectorsPerCopy = oldSectorsPerCopy;
-    }
-    else if (!readLayout(header))
-        return false;
+    if (!readLayout(header)) return false;
     // Use 64-bit arithmetic to check that the layout fits on the selected block device.
     const end = cast(ulong) recordsLba + cast(ulong) volumeSlots * 2 * sectorsPerCopy;
     if (volumeSlots == 0 || volumeSlots > fileLimit || volumeFileBytes == 0 || volumeFileBytes > maxFileBytes
@@ -117,18 +89,7 @@ bool mount()
         || sectorsPerCopy < 1 + (volumeFileBytes + sectorBytes - 1) / sectorBytes
         || end > disk.sectorCount || end > 0x1_0000_0000 || !readSector(cast(uint) (end - 1), last))
         return false;
-    if (hasMagic(header, legacyMagic))
-    {
-        Sector marker;
-        if (!readSector(migrationMarkerLba, marker))
-            return false;
-        if (hasMagic(marker, currentMagic))
-            mounted = loadCurrent();
-        else if (isBlank(marker))
-            mounted = loadLegacy() && migrateLegacy();
-    }
-    else
-        mounted = loadCurrent();
+    mounted = loadEntries();
     return mounted;
 }
 
@@ -155,7 +116,7 @@ private bool readLayout(ref const Sector raw)
 uint capacity() { return mounted ? volumeSlots : 0; }
 uint fileSizeLimit() { return mounted ? volumeFileBytes : 0; }
 
-private bool loadCurrent()
+private bool loadEntries()
 {
     foreach (slot, ref entry; entries[0 .. volumeSlots])
     {
@@ -208,71 +169,6 @@ private CopyStatus readCopy(uint lba, out Metadata fields, ref char[maxFileBytes
     }
     return fields.checksum == checksum(fields, payload[0 .. fields.length])
         ? CopyStatus.valid : CopyStatus.invalid;
-}
-
-private bool loadLegacy()
-{
-    // Validate all legacy records first so corruption can be rejected before any disk write.
-    foreach (slot, ref entry; entries[0 .. volumeSlots])
-    {
-        LegacySector first = void;
-        LegacySector second = void;
-        const lba = cast(uint) (1 + slot * 2);
-        if (!readSector(lba, first.raw) || !readSector(lba + 1, second.raw))
-            return false;
-
-        const firstValid = validLegacy(first.record);
-        const secondValid = validLegacy(second.record);
-        if (secondValid && (!firstValid || isNewer(second.record.fields.sequence, first.record.fields.sequence)))
-            copyLegacy(entry, second.record);
-        else if (firstValid)
-            copyLegacy(entry, first.record);
-        else if (!isBlank(first.raw) || !isBlank(second.raw))
-            return false;
-    }
-    return true;
-}
-
-private void copyLegacy(ref Entry entry, ref const LegacyRecord old)
-{
-    entry.fields = old.fields;
-    foreach (i; 0 .. old.fields.length)
-        entry.payload[i] = old.payload[i];
-}
-
-private bool validLegacy(ref const LegacyRecord old)
-{
-    if (!validMetadata(old.fields, old.payload.length))
-        return false;
-    // The v1 checksum covers the entire legacy record, including bytes beyond the used data.
-    return old.fields.checksum == checksum(old.fields, old.payload[])
-        && isText(old.payload[0 .. old.fields.length]);
-}
-
-private bool migrateLegacy()
-{
-    const Sector blank = 0;
-    foreach (slot, ref entry; entries[0 .. volumeSlots])
-    {
-        // If migration stopped partway through, rebuild the new area from the original format.
-        if (!writeSector(copyLba(slot, true), blank))
-            return false;
-        const lba = copyLba(slot, false);
-        if (entry.fields.sequence == 0)
-        {
-            if (!writeSector(lba, blank))
-                return false;
-        }
-        else if (!writeCopy(lba, entry.fields, entry.payload[0 .. entry.fields.length]))
-            return false;
-    }
-
-    Sector marker = 0;
-    auto bytes = cast(char*) marker.ptr;
-    foreach (i, char c; currentMagic)
-        bytes[i] = c;
-    // Until this sector is durable, the v1 header and data remain authoritative at boot.
-    return writeSector(migrationMarkerLba, marker);
 }
 
 bool isMounted()
@@ -435,17 +331,6 @@ private bool validMetadata(ref const Metadata fields, size_t limit)
         return false;
     const name = filename(fields);
     return name.length == 0 ? fields.length == 0 : validFilename(name);
-}
-
-private bool hasMagic(ref const Sector sector, scope const(char)[] magic)
-{
-    const bytes = (cast(const(char)*) sector.ptr)[0 .. sectorBytes];
-    if (!equal(bytes[0 .. magic.length], magic))
-        return false;
-    foreach (char c; bytes[magic.length .. $])
-        if (c != 0)
-            return false;
-    return true;
 }
 
 private bool isBlank(ref const Sector sector)

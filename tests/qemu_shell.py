@@ -1,5 +1,5 @@
 """Boot QEMU to test COM1 in verify_shell and the screen and PS/2 input in verify_desktop.
-Use disposable disks to test persistence, recovery, Ring 3 ELFs, the D runtime, Phobos, and window controls.
+Use disposable DlangFS3 disks to test persistence, recovery, unsupported-format rejection, Ring 3 ELFs, the D runtime, Phobos, and window controls.
 """
 
 from contextlib import ExitStack, contextmanager
@@ -720,30 +720,6 @@ def verify_new_apps(console, qmp, image_path):
     wait_process_names(console)
 
 
-def old_record(sequence, name, contents):
-    # DLANGFS1 stores metadata and the 478-byte data area in the same sector.
-    raw = struct.pack("<IIH24s478s", sequence, 0, len(contents), name, contents)
-    checksum = 2166136261
-    for byte in raw[:4] + raw[8:]:
-        checksum = ((checksum ^ byte) * 16777619) & 0xffffffff
-    return raw[:4] + struct.pack("<I", checksum) + raw[8:]
-
-
-def old_disk_image():
-    image = bytearray(1024 * 1024)
-    image[:8] = b"DLANGFS1"
-    records = (
-        old_record(1, b"notes.txt", b"first draft\n"),
-        old_record(2, b"notes.txt", b"latest draft\nsecond line\n"),
-        old_record(1, b"removed.txt", b"old content"),
-        old_record(2, b"", b""),
-        old_record(1, b"full-v1.txt", b"x" * 478),
-    )
-    for sector, record in enumerate(records, start=1):
-        image[sector * 512 : (sector + 1) * 512] = record
-    return image
-
-
 def begin_upload(console, name, size):
     command = b"put " + name + b" " + str(size).encode()
     console.send(command + b"\r\n")
@@ -950,21 +926,14 @@ def verify_counter_reads_disk(console, qmp, screen):
     put_file(console, b"counter.elf", binary)
 
 
-def verify_migration_and_large_files(qemu_command, root):
-    disk = root / "legacy-data.img"
-    legacy = old_disk_image()
-    # Simulate an interrupted migration with the new area written and the completion marker still blank.
-    legacy[34 * 512 : 34 * 512 + 4] = b"part"
-    disk.write_bytes(legacy)
-    source_end = 33 * 512
-    old_text = b"latest draft\nsecond line\n"
+def verify_large_files(qemu_command, root):
+    disk = root / "large-files.img"
+    format_disk(disk)
     large_text = (b"0123456789abcdef\n" * 400)[:6145]
     edited_text = large_text + b"z"
     binary = bytes(range(256)) * 64
 
     with boot(qemu_command, disk, with_qmp=True) as (console, qmp):
-        expect_file_bytes(console, b"notes.txt", old_text)
-        expect_file_bytes(console, b"full-v1.txt", b"x" * 478)
         expect_command(console, b"cat removed.txt", b"File not found.\r\n")
         put_file(console, b"large.txt", large_text)
         put_file(console, b"full.bin", binary)
@@ -975,10 +944,10 @@ def verify_migration_and_large_files(qemu_command, root):
         expect_equal(console.read_until(PROMPT), b"Invalid hex data or byte count. File was not changed.\r\n")
         expect_file_bytes(console, b"large.txt", large_text)
 
-        # Install ELFs on the migrated disk and use Files to open, append to, and save a document larger than 6 KiB.
+        # Install ELFs on the disk and use Files to open, append to, and save a document larger than 6 KiB.
         for name in ("files.elf", "editor.elf"):
             put_file(console, name.encode(), (APP_DIRECTORY / name).read_bytes())
-        qmp.keys("f5", "down", "ret")
+        qmp.keys("f5", "ret")
         screen = root / "large-editor.ppm"
         qmp.until_pixel(screen, 225, 107, bytes.fromhex("135a56"))
         qmp.keys("z", "f3")
@@ -986,23 +955,30 @@ def verify_migration_and_large_files(qemu_command, root):
                     bytes.fromhex("ffffff"), bytes.fromhex("135a56"))
         expect_file_bytes(console, b"large.txt", edited_text)
 
-    migrated = disk.read_bytes()
-    expect_equal(migrated[:source_end], legacy[:source_end])
-    expect_equal(migrated[source_end : source_end + 8], b"DLANGFS2")
+    saved = disk.read_bytes()
     with boot(qemu_command, disk) as (console, _):
-        expect_file_bytes(console, b"notes.txt", old_text)
         expect_file_bytes(console, b"large.txt", edited_text)
         expect_file_bytes(console, b"full.bin", binary)
-    expect_equal(disk.read_bytes(), migrated)
+    expect_equal(disk.read_bytes(), saved)
 
-    # A corrupted file with no valid prior generation is treated as lost and skipped during migration.
-    corrupt = root / "legacy-corrupt.img"
-    bad_data = old_disk_image()
-    bad_data[5 * 512 + 40] ^= 1
+    # Reject a corrupted file when its other generation is blank, without changing the disk.
+    corrupt = root / "corrupt-data.img"
+    bad_data = bytearray(saved)
+    bad_data[bad_data.index(binary)] ^= 1
     corrupt.write_bytes(bad_data)
     with boot(qemu_command, corrupt, disk_ready=False) as (console, _):
         expect_command(console, b"write notes.txt ignored", b"Data disk unavailable.\r\n")
     expect_equal(corrupt.read_bytes(), bad_data)
+
+
+def verify_unsupported_formats(qemu_command, root):
+    for version in (1, 2):
+        disk = root / f"unsupported-v{version}.img"
+        original = f"DLANGFS{version}".encode() + bytes(1024 * 1024 - 8)
+        disk.write_bytes(original)
+        with boot(qemu_command, disk, disk_ready=False) as (console, _):
+            expect_command(console, b"write forbidden.txt no", b"Data disk unavailable.\r\n")
+        expect_equal(disk.read_bytes(), original)
 
 
 def format_disk(path, *options):
@@ -1261,10 +1237,10 @@ def verify_storage_discovery(qemu_command, root):
             expect_command(console, b"cat location.txt", b"discovered\r\n")
         expect_equal(unrelated.read_bytes(), untouched)
 
-    # With multiple candidates, keep both disks untouched and skip v1 migration.
-    first = root / "ambiguous-v1.img"
-    second = root / "ambiguous-v3.img"
-    first.write_bytes(old_disk_image())
+    # With multiple DlangFS3 candidates, refuse to choose a write target.
+    first = root / "ambiguous-first.img"
+    second = root / "ambiguous-second.img"
+    format_disk(first)
     format_disk(second)
     originals = (first.read_bytes(), second.read_bytes())
     with boot(qemu_command, first, disk_ready=False, extra_drives=((1, second),)) as (console, _):
@@ -1302,7 +1278,7 @@ def main(qemu_command):
 
         # Use a separate disk so experiment and desktop ELFs do not compete for 16 file slots.
         experiments = root / "experiments.img"
-        experiments.write_bytes(b"DLANGFS2" + bytes(1024 * 1024 - 8))
+        format_disk(experiments)
         with boot(qemu_command, experiments) as (console, _):
             baseline_memory = free_memory(console)
             verify_sleep(console)
@@ -1340,7 +1316,8 @@ def main(qemu_command):
         with boot(qemu_command, unknown_disk, disk_ready=False) as (console, _):
             expect_command(console, b"write notes.txt hello", b"Data disk unavailable.\r\n")
         expect_equal(unknown_disk.read_bytes(), unknown_data)
-        verify_migration_and_large_files(qemu_command, root)
+        verify_large_files(qemu_command, root)
+        verify_unsupported_formats(qemu_command, root)
         verify_volume_layout(qemu_command, root)
         verify_storage_discovery(qemu_command, root)
         verify_external_gui(qemu_command, root)
@@ -1348,7 +1325,7 @@ def main(qemu_command):
         verify_close_deadline(qemu_command, root)
         verify_desktop_clock(qemu_command, root)
 
-    print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, v1 migration, persistence, and disk recovery")
+    print("PASS: QEMU Ring 3 desktop apps, disk ELF, D initialization, heap, arrays, exceptions, Phobos vectors, Counter events, DlangFS3, unsupported-format rejection, persistence, and disk recovery")
 
 
 if __name__ == "__main__":
