@@ -1,5 +1,5 @@
-/// DlangFSの配置をヘッダから読み、2世代で保存する。v1/v2の配置は互換定数として保持する。
-/// commitは本文を先に書き、世代番号とチェックサムを最後に公開する。
+/// Read the DlangFS layout from its header and retain two generations per file. Fixed layouts keep v1 and v2 readable.
+/// commit writes the file data first and publishes its generation number and checksum last.
 module filesystem;
 
 import block_device : BlockDevice, Sector, sectorBytes;
@@ -9,7 +9,7 @@ private __gshared BlockDevice disk;
 
 public import file_api;
 
-// ディスク上の名前幅はABIのバッファ上限から独立した形式定義。
+// The on-disk name width is part of the format and independent of the ABI buffer limit.
 private enum diskNameBytes = 24;
 static assert(maxNameBytes >= diskNameBytes);
 
@@ -53,7 +53,7 @@ static assert(Metadata.sizeof == 34 && Metadata.checksum.offsetof == 4);
 static assert(LegacyRecord.sizeof == sectorBytes && maxFileBytes % sectorBytes == 0);
 private enum legacyMagic = "DLANGFS1";
 private enum currentMagic = "DLANGFS2";
-// v1/v2の既存ディスクは、今後API上限を変更しても同じ配置で読む。
+// Read existing v1 and v2 disks with their original layouts even if API limits change.
 private enum uint oldFileSlots = 16;
 private enum uint oldFileBytes = 16 * 1024;
 private enum uint migrationMarkerLba = 33;
@@ -94,7 +94,7 @@ bool mount()
         const magic = (cast(const(char)*) first.ptr)[0 .. 8];
         if (!equal(magic, legacyMagic) && !equal(magic, currentMagic) && !equal(magic, layoutMagic))
             continue;
-        // 複数のDlangFS候補がある場合、接続順だけで書き込み先を決めない。
+        // Avoid choosing a write target by attachment order when several disks could contain DlangFS.
         if (found) return false;
         disk = candidate;
         header = first;
@@ -110,7 +110,7 @@ bool mount()
     }
     else if (!readLayout(header))
         return false;
-    // 配置を64bitで検査し、選択したブロックデバイスの容量内に収まることを確かめる。
+    // Use 64-bit arithmetic to check that the layout fits on the selected block device.
     const end = cast(ulong) recordsLba + cast(ulong) volumeSlots * 2 * sectorsPerCopy;
     if (volumeSlots == 0 || volumeSlots > fileLimit || volumeFileBytes == 0 || volumeFileBytes > maxFileBytes
         || volumeFileBytes > ushort.max || recordsLba == 0
@@ -212,7 +212,7 @@ private CopyStatus readCopy(uint lba, out Metadata fields, ref char[maxFileBytes
 
 private bool loadLegacy()
 {
-    // 先にすべての旧レコードを検査する。破損を見つけた場合はディスクに一切書かない。
+    // Validate all legacy records first so corruption can be rejected before any disk write.
     foreach (slot, ref entry; entries[0 .. volumeSlots])
     {
         LegacySector first = void;
@@ -244,7 +244,7 @@ private bool validLegacy(ref const LegacyRecord old)
 {
     if (!validMetadata(old.fields, old.payload.length))
         return false;
-    // v1のチェックサムは使用済み本文だけでなく、旧レコードの末尾までを含む。
+    // The v1 checksum covers the entire legacy record, including bytes beyond the used data.
     return old.fields.checksum == checksum(old.fields, old.payload[])
         && isText(old.payload[0 .. old.fields.length]);
 }
@@ -254,7 +254,7 @@ private bool migrateLegacy()
     const Sector blank = 0;
     foreach (slot, ref entry; entries[0 .. volumeSlots])
     {
-        // 移行途中で停止していた場合も、旧形式を正本として新領域を作り直す。
+        // If migration stopped partway through, rebuild the new area from the original format.
         if (!writeSector(copyLba(slot, true), blank))
             return false;
         const lba = copyLba(slot, false);
@@ -271,7 +271,7 @@ private bool migrateLegacy()
     auto bytes = cast(char*) marker.ptr;
     foreach (i, char c; currentMagic)
         bytes[i] = c;
-    // このセクタが永続化するまで、v1のヘッダと本文が起動時の正本。
+    // Until this sector is durable, the v1 header and data remain authoritative at boot.
     return writeSector(migrationMarkerLba, marker);
 }
 
@@ -290,7 +290,7 @@ const(char)[] nameAt(size_t slot)
     return mounted && slot < volumeSlots ? filename(entries[slot].fields) : null;
 }
 
-/// dataは次のファイルシステム更新まで有効な、任意のバイト列のビュー。
+/// data is a view of arbitrary bytes, valid until the next filesystem update.
 FsResult open(scope const(char)[] name, out const(char)[] data, out FileVersion fileVersion)
 {
     if (!mounted)
@@ -307,7 +307,7 @@ FsResult open(scope const(char)[] name, out const(char)[] data, out FileVersion 
     return FsResult.ok;
 }
 
-/// expectedがある場合は指定した世代だけを更新する。FileVersion.initは新規作成のみ。
+/// If expected is provided, update only the specified generation. FileVersion.init allows creation only.
 FsResult save(scope const(char)[] name, scope const(char)[] data,
               scope const(FileVersion)* expected = null)
 {
@@ -353,7 +353,7 @@ FsResult remove(scope const(char)[] name)
     if (slot == fileLimit)
         return FsResult.notFound;
 
-    // 名前のない新しい世代を、削除の記録として保存する。
+    // Store a new generation without a name to record deletion.
     Metadata removed;
     return commit(slot, removed, null);
 }
@@ -395,7 +395,7 @@ private bool writeCopy(uint lba, ref Metadata fields, scope const(char)[] data)
         written += count;
     }
 
-    // ATAドライバは各書き込みをフラッシュする。本文が揃ってからメタデータを確定する。
+    // The ATA driver flushes each write. Commit metadata only after all file data is written.
     HeaderSector header = void;
     header.raw[] = 0;
     fields.checksum = checksum(fields, data);

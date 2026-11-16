@@ -1,4 +1,4 @@
-/// x64 UEFI ABIのうち、ローダーが使うテーブル、プロトコル、状態値を定義する。
+/// Define the x64 UEFI tables, protocols, and status codes used by the loader.
 module uefi;
 
 alias Status = ulong;
@@ -29,7 +29,7 @@ immutable Guid simpleFileSystemGuid =
 immutable Guid graphicsOutputGuid =
     Guid(0x9042a9de, 0x23dc, 0x4a38, [0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a]);
 
-// このモジュールはWindows x64用にコンパイルする。extern(C)がUEFIの呼出規約になる。
+// Compile for Windows x64 so extern(C) uses the UEFI calling convention.
 extern(C)
 {
     struct TableHeader

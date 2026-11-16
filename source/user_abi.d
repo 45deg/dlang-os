@@ -1,4 +1,4 @@
-/// システムコールとELFプロセスのヒープ範囲をカーネルとアプリで共有する。
+/// Share syscall numbers and ELF process heap bounds between the kernel and applications.
 module user_abi;
 
 enum Call : ulong { yield, publish, exit, write, reservedWindowOpen, reservedWindowText, reservedWindowEvent,
@@ -8,8 +8,8 @@ enum uint titleLimit = 24;
 enum uint writeLimit = 128;
 enum size_t userHeapBase = 0x1000_0000;
 enum size_t userHeapInitialBytes = 64 * 1024;
-// 仮想領域の上限。実際に確保できる量は空きRAMによる。
+// Virtual address range limit. Available RAM determines how much can be allocated.
 enum size_t userHeapLimitBytes = 0x6000_0000;
 
-// guiWaitの無期限待機。sleepはミリ秒数を受け取る。
+// Infinite wait for guiWait. sleep takes a duration in milliseconds.
 enum ulong waitForever = ulong.max;

@@ -1,4 +1,4 @@
-/// UEFIローダーから起動情報を受け取り、ディスク、プロセス、GUIを初期化してシェルを開始する。
+/// Receive boot information from UEFI, initialize the disk, processes, and GUI, and start the shell.
 module kernel;
 
 import boot_info : BootInfo, initBootInfo;
@@ -11,7 +11,7 @@ import process : initProcesses, runNext;
 import serial : initSerial, writeText;
 import shell : Shell;
 
-// 最大16 KiBの文書を持つ各ウィンドウと転送領域を、ブートスタックの外に置く。
+// Keep window state, including documents up to 16 KiB, and transfer buffers off the boot stack.
 private __gshared Desktop desktop;
 private __gshared Shell shell;
 

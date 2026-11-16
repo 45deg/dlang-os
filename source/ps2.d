@@ -1,4 +1,4 @@
-/// i8042の受信バイトをキーボードのキーとマウスの移動・ボタンに変換する。
+/// Decode i8042 bytes into keyboard keys, mouse motion, and mouse buttons.
 module ps2;
 
 import clock : milliseconds;
@@ -30,7 +30,7 @@ struct InputEvent
 }
 
 private enum ushort dataPort = 0x60;
-private enum ushort commandPort = 0x64; // 読み出し時はステータス
+private enum ushort commandPort = 0x64; // Reads return status.
 private enum ubyte outputFull = 0x01;
 private enum ubyte inputFull = 0x02;
 private enum ubyte fromMouse = 0x20;
@@ -68,7 +68,7 @@ struct Ps2
             || !command(0xae))
             return false;
 
-        // キーボードはSet 2、i8042の変換を通ったSet 1を受信する。
+        // The keyboard uses Set 2. The i8042 translates it to Set 1 before delivery.
         if (!deviceCommand(false, 0xf5) || !deviceCommand(false, 0xf0)
             || !deviceCommand(false, 2) || !deviceCommand(false, 0xf4))
             return false;
@@ -144,7 +144,7 @@ struct Ps2
         }
         if (!wasExtended && code == 0x40)
         {
-            // F6を押し続けても、破棄の確認を2回通過しないようにする。
+            // Prevent a held F6 key from getting through both stages of discard confirmation.
             const pressed = !released && !discardKeyDown;
             discardKeyDown = !released;
             return pressed ? Key.discard : Key.none;
@@ -223,7 +223,7 @@ struct Ps2
         packetLength = 0;
 
         const flags = packet[0];
-        // PS/2のYは上が正。オーバーフロー時は移動を捨ててもボタン状態は渡す。
+        // Positive PS/2 Y points up. On overflow, discard motion and still report button state.
         const dx = (flags & 0x40) ? 0 : cast(int) packet[1] - ((flags & 0x10) ? 256 : 0);
         const dy = (flags & 0x80) ? 0 : ((flags & 0x20) ? 256 : 0) - cast(int) packet[2];
         return InputEvent(InputKind.mouse, Key.none, MouseEvent(dx, dy, (flags & 1) != 0));

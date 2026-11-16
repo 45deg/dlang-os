@@ -1,4 +1,4 @@
-/// 利用できるブロックドライバを列挙する。今はPCI IDEのATA PIOを登録する。
+/// Enumerate available block drivers. Currently registers PCI IDE ATA PIO devices.
 module storage;
 
 import ata : discoverAta;

@@ -1,4 +1,4 @@
-/// Ring 3アプリとデスクトップが交換する入力イベント、描画一覧、読み取り用スナップショット。
+/// Define input events, draw lists, and read-only snapshots exchanged by Ring 3 apps and the desktop.
 module gui_abi;
 
 import file_api : FileVersion, fileLimit, maxFileBytes, maxNameBytes;
@@ -9,7 +9,7 @@ enum maxProcesses = 8 + maxGuiWindows;
 
 enum GuiEvent : ubyte { none, key, click, drag, release, close, openDocument }
 
-// カーネルから返す構造体はパディングを持たせない。
+// Structures returned by the kernel have no padding.
 struct GuiInput
 {
     align(1):
@@ -19,7 +19,7 @@ struct GuiInput
     ushort key;
     short x, y;
     ushort width, height;
-    ulong now; // 起動後のミリ秒
+    ulong now; // Milliseconds since boot.
     ulong diskGeneration;
     char[maxNameBytes] filename;
     ubyte filenameLength;
@@ -80,5 +80,5 @@ struct FileTransfer
     char[maxFileBytes] data;
 }
 
-// 保存成功時は最上位ビットを立て、残りの上位ビットにスロット、下位32ビットに世代番号を返す。
+// On successful save, set the top bit, encode the slot in the remaining high bits, and return the generation in the low 32 bits.
 enum ulong savedVersion = 1UL << 63;

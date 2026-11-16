@@ -1,5 +1,5 @@
-/// デスクトップの登録表と、設定ファイルがない場合の同梱アプリの既定値。
-/// externalはシェルなどからguiCreateした、ランチャーに登録されていないアプリの既定値。
+/// Desktop app registry and built-in defaults used when there is no configuration file.
+/// external provides defaults for apps that call guiCreate from the shell or another path outside the launcher.
 module app_registry;
 
 import graphics : Rect;
@@ -16,7 +16,7 @@ struct AppRegistration
     Rect bounds;
     int cascadeX, cascadeY;
     bool fromRight;
-    uint instances; // 0はウィンドウ全体の上限まで。1は既存の窓を前面へ戻す。
+    uint instances; // 0 uses the overall window limit. 1 brings the existing window to the front.
     Key launchKey;
     const(char)[] keyLabel;
     bool documents;
@@ -40,7 +40,7 @@ nothrow @nogc:
 
 const(App)[] apps() { return identifiers[0 .. count]; }
 
-/// 呼び出し側が文字列の生存期間を保証する。設定は起動時に一括適用する。
+/// The caller keeps strings alive. Apply the entire configuration at boot.
 void setRegistrations(scope const(AppRegistration)[] entries)
 {
     assert(entries.length > 0 && entries.length <= appLimit);

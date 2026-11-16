@@ -1,4 +1,4 @@
-/// UEFIの空きRAMだけをページ単位で管理する。allocatePageはゼロ化し、freePageは再利用リストへ戻す。
+/// Manage pages from free UEFI RAM. allocatePage zeroes each page, and freePage returns it to the free list.
 module physical_memory;
 
 import boot_info : availableRanges, directMapOffset;
@@ -28,7 +28,7 @@ ulong allocatePage()
     return page;
 }
 
-/// 呼び出し側が所有するページを一度だけ返す。共有コードやMMIOを渡さない。
+/// Return only pages owned by the caller, once per page. Shared code and MMIO may not be freed here.
 void freePage(ulong page)
 {
     *cast(ulong*) (directMapOffset + page) = freeHead;

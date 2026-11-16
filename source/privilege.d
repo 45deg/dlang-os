@@ -1,4 +1,4 @@
-/// GDT・TSS・IDTを設定する。enterUserはRing 3の状態を保存して戻り、waitForInterruptはRing 0のHLTから復帰する。
+/// Set up the GDT, TSS, and IDT. enterUser returns with saved Ring 3 state. waitForInterrupt resumes from Ring 0 HLT.
 module privilege;
 
 import cpu : readMsr, writeMsr, writePort;
@@ -12,7 +12,7 @@ private enum ushort kernelCode = 0x08;
 enum ushort userData = 0x1b;
 enum ushort userCode = 0x23;
 
-// レジスタの順序はenterUserとprocessTrapのpop/push、およびCPUの復帰フレームと揃える。
+// Match register order to enterUser and processTrap push/pop sequences and the CPU return frame.
 struct UserFrame
 {
     ulong r15, r14, r13, r12, r11, r10, r9, r8;
@@ -56,7 +56,7 @@ nothrow @nogc:
 
 void initPrivilege()
 {
-    // PICを例外と重ならない0x20/0x28へ移し、UARTのIRQ4だけ許可する。
+    // Remap the PIC to 0x20/0x28 to avoid CPU exception vectors and enable only UART IRQ4.
     writePort(0x20, 0x11);
     writePort(0xa0, 0x11);
     writePort(0x21, 0x20);
@@ -68,16 +68,16 @@ void initPrivilege()
     writePort(0x21, 0xef);
     writePort(0xa1, 0xff);
 
-    gdt[1] = 0x00af9a000000ffff; // Ring 0、64ビットコード
-    gdt[2] = 0x00cf92000000ffff; // Ring 0、データ
-    gdt[3] = 0x00cff2000000ffff; // Ring 3、データ
-    gdt[4] = 0x00affa000000ffff; // Ring 3、64ビットコード
+    gdt[1] = 0x00af9a000000ffff; // Ring 0, 64-bit code.
+    gdt[2] = 0x00cf92000000ffff; // Ring 0, data.
+    gdt[3] = 0x00cff2000000ffff; // Ring 3, data.
+    gdt[4] = 0x00affa000000ffff; // Ring 3, 64-bit code.
     const tssAddress = cast(ulong) tss.ptr;
     gdt[5] = cast(ulong) (tss.length - 1) | ((tssAddress & 0xffffff) << 16)
         | (0x89UL << 40) | ((tssAddress & 0xff000000) << 32);
     gdt[6] = tssAddress >> 32;
     *cast(ulong*) (tss.ptr + 4) = cast(ulong) (trapStack.ptr + trapStack.length); // RSP0
-    *cast(ushort*) (tss.ptr + 102) = cast(ushort) tss.length; // I/O許可ビットマップなし
+    *cast(ushort*) (tss.ptr + 102) = cast(ushort) tss.length; // No I/O permission bitmap.
 
     const gdtr = TablePointer(cast(ushort) (gdt.sizeof - 1), cast(ulong) gdt.ptr);
     loadGdt(&gdtr);
@@ -85,14 +85,14 @@ void initPrivilege()
     static foreach (vector; 0 .. 32)
         setGate(vector, &trap!vector);
     setGate(0x24, &serialInterruptEntry);
-    setGate(0x27, &ignoreSpurious); // PICのspurious IRQ7にはEOIしない。
+    setGate(0x27, &ignoreSpurious); // A spurious PIC IRQ7 needs no EOI.
     setGate(timerVector, &trap!timerVector);
-    setGate(syscallVector, &trap!syscallVector, 0xee); // Ring 3からINTで呼べる入口
+    setGate(syscallVector, &trap!syscallVector, 0xee); // Entry callable through INT from Ring 3.
     setGate(spuriousVector, &ignoreSpurious);
     const idtr = TablePointer(cast(ushort) (idt.sizeof - 1), cast(ulong) idt.ptr);
     __asm("lidtq ($0)", "r,~{memory}", &idtr);
 
-    // INT 0x80以外の高速システムコール入口は使わない。タスクのSIMD/FPU状態は未管理。
+    // INT 0x80 is the only syscall entry. Task SIMD and FPU state is unmanaged.
     writeMsr(0xc0000080, (readMsr(0xc0000080) | (1UL << 11)) & ~1UL); // NXE=1, SCE=0
     writeMsr(0x174, 0); // SYSENTER_CS
     __asm("movq %cr0, %rax; orq $$8, %rax; movq %rax, %cr0",
@@ -126,7 +126,7 @@ private void loadGdt(const TablePointer*)
     }, "~{memory}");
 }
 
-/// System V ABI。スケジューラのスタックを保管し、RIPとRSPを含むユーザー状態を復元する。
+/// System V ABI. Save the scheduler stack and restore user state, including RIP and RSP.
 extern(C) void enterUser(UserFrame*, ulong, ulong)
 {
     asm @nogc nothrow { naked; }
@@ -232,7 +232,7 @@ extern(C) private void processTrap()
     }, "~{memory}");
 }
 
-/// IF=0で呼ぶ。STIの直後にHLTを置き、確認と停止の間の割り込み取りこぼしを防ぐ。
+/// Call with IF=0. HLT immediately follows STI so an interrupt cannot be lost between the idle check and halt.
 bool waitForInterrupt()
 {
     idleTimerDelivered = 0;
@@ -240,7 +240,7 @@ bool waitForInterrupt()
     return idleTimerDelivered != 0;
 }
 
-// 任意のユーザー/アイドル状態から呼ばれるので、汎用レジスタとスタック配置を保存する。
+// Preserve general-purpose registers and the stack layout because this can interrupt any user or idle context.
 private void serialInterruptEntry()
 {
     asm @nogc nothrow { naked; }

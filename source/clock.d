@@ -1,5 +1,5 @@
-/// initClockはPITでTSCを校正する。millisecondsは経過時間、currentDateTimeはRTC基準の暦を返す。
-/// 現在の単一CPU向け。校正後のTSC周波数が一定であることを前提とする。
+/// initClock calibrates the TSC against the PIT. milliseconds returns elapsed time and currentDateTime uses the RTC snapshot.
+/// Assumes a single CPU and a constant TSC frequency after calibration.
 module clock;
 
 import boot_info : bootDateTime, bootDateTimeValid, bootDateTimeTicks;
@@ -8,7 +8,7 @@ import calendar : DateTime, advance;
 import cpu : readPort, writePort, ticks;
 
 private enum pitHz = 1_193_182;
-private enum ushort calibrationCount = 23_864; // 約20 ms
+private enum ushort calibrationCount = 23_864; // About 20 ms.
 private __gshared ulong ticksPerSecond, epoch;
 
 nothrow @nogc:
@@ -23,7 +23,7 @@ bool initClock()
     writePort(0x42, cast(ubyte) (calibrationCount >> 8));
     const start = ticks();
     writePort(0x61, cast(ubyte) ((original & ~2) | 1));
-    // 時刻源の初期化前だけは、壊れたPITで永久待機しないため回数で制限する。
+    // Use an iteration limit before the time source is initialized so a faulty PIT cannot cause an indefinite wait.
     foreach (_; 0 .. 10_000_000)
     {
         if (!(readPort(0x61) & 0x20))
@@ -42,7 +42,7 @@ ulong milliseconds()
     return elapsed / ticksPerSecond * 1000 + elapsed % ticksPerSecond * 1000 / ticksPerSecond;
 }
 
-/// 起動前にRTCから読んだ暦へ、同じTSCで測った経過秒を加える。
+/// Add seconds measured by the same TSC to the RTC snapshot taken before kernel startup.
 bool currentDateTime(out DateTime time)
 {
     if (!bootDateTimeValid() || ticksPerSecond == 0) return false;

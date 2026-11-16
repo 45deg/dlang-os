@@ -1,4 +1,4 @@
-/// PCI IDEのチャネルと両ドライブをIDENTIFYで調べ、512バイト・LBA28のATA PIOを登録する。
+/// Probe PCI IDE channels and both drives with IDENTIFY. Register 512-byte LBA28 ATA PIO devices.
 module ata;
 
 import block_device : BlockDevice, Sector, sectorBytes;
@@ -35,23 +35,23 @@ private struct Drive
 
     bool identify()
     {
-        writePort(control, 2); // nIEN。データ転送はポーリングで行う。
+        writePort(control, 2); // Set nIEN. Data transfer uses polling.
         writePort(port(6), select);
         settle();
         foreach (ushort offset; 2 .. 6) writePort(port(offset), 0);
         writePort(port(7), 0xec);
         settle();
         if (!waitStatus(dataReady, 0) || readPort(port(4)) != 0 || readPort(port(5)) != 0)
-            return false; // ATAPIもここで除外する。
+            return false; // Also excludes ATAPI devices.
         Sector identity;
         foreach (ref word; identity) word = readPortWord(base);
         settle();
         if (!waitStatus(ready, dataReady) || !(identity[49] & (1 << 9))) return false;
-        // 有効なword 106が長い論理セクタを示す場合、512バイト以外は扱わない。
+        // If valid IDENTIFY word 106 reports a longer logical sector, reject the drive.
         if ((identity[106] & 0xc000) == 0x4000 && (identity[106] & 0x1000)
             && (cast(uint) identity[117] | (cast(uint) identity[118] << 16)) != sectorBytes / 2)
             return false;
-        // writeの成功を永続化とするため、FLUSH CACHE対応を必須にする。
+        // Require FLUSH CACHE so a successful write means the data is persistent.
         if ((identity[83] & 0xc000) != 0x4000 || !(identity[83] & (1 << 12))) return false;
         sectors = cast(uint) identity[60] | (cast(uint) identity[61] << 16);
         if (sectors > 0x1000_0000) sectors = 0x1000_0000;
@@ -111,7 +111,7 @@ private bool inspectController(PciAddress address)
         }
         else
         {
-            // PCI IDE互換モードの仕様で定められたポート。nativeモードはBARから取得する。
+            // PCI IDE compatibility mode uses fixed ports. Native mode obtains ports from the BARs.
             base = cast(ushort) (channel == 0 ? 0x1f0 : 0x170);
             control = cast(ushort) (channel == 0 ? 0x3f6 : 0x376);
         }

@@ -1,4 +1,4 @@
-/// デスクトップの入力を各Ring 3アプリに配送し、コピーと検証が済んだ描画一覧を合成する。
+/// Deliver desktop input to Ring 3 apps and composite draw lists after copying and validating them.
 module gui;
 
 import address_space : AddressSpace, copyFromUser, copyToUser;
@@ -77,7 +77,7 @@ void setGuiFocus(uint pid, bool focused)
     }
 }
 
-/// 未配送の入力、フォーカス、ディスク状態変更で待機中のアプリを再開する。
+/// Wake waiting apps on pending input, focus changes, or disk state changes.
 bool guiInputReady(uint pid)
 {
     const window = find(pid);

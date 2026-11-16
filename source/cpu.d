@@ -1,4 +1,4 @@
-/// x86-64固有の命令。8・16・32ビットのI/Oポートアクセス、待機、CPUの停止をまとめる。
+/// Provide x86-64 primitives for 8-, 16-, and 32-bit port I/O, waiting, and halting the CPU.
 module cpu;
 
 import ldc.llvmasm : __asm;

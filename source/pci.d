@@ -1,4 +1,4 @@
-/// PCI configuration mechanism 1で全バスを列挙する。ドライバはクラスとBARを読む。
+/// Enumerate all buses using PCI configuration mechanism 1. Drivers read device classes and BARs.
 module pci;
 
 import cpu : readPortDword, writePortDword;
@@ -16,7 +16,7 @@ struct PciAddress
     }
 }
 
-/// falseで列挙を中断する。関数0のmultifunctionビットがある場合だけ関数1〜7を調べる。
+/// Return false to stop enumeration. Probe functions 1 through 7 only if function 0 sets the multifunction bit.
 bool scanPci(scope bool function(PciAddress) nothrow @nogc visit) nothrow @nogc
 {
     foreach (bus; 0 .. 256)

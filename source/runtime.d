@@ -1,4 +1,4 @@
-/// LDCが配列と構造体のコピー・初期化・比較に使うメモリ関数をDで提供する。
+/// Implement the memory routines LDC uses to copy, initialize, and compare arrays and structs.
 module runtime;
 
 import core.volatile : volatileLoad, volatileStore;
@@ -9,7 +9,7 @@ void* memcpy(void* destination, const(void)* source, size_t count)
 {
     auto output = cast(ubyte*) destination;
     auto input = cast(const(ubyte)*) source;
-    // LLVMがこの実装自体をmemcpy呼び出しに置き換えないようにする。
+    // Prevent LLVM from rewriting this implementation as a call to memcpy itself.
     foreach (i; 0 .. count)
         volatileStore(output + i, input[i]);
     return destination;

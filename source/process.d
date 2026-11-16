@@ -1,4 +1,4 @@
-/// spawnElfでELFとヒープを配置する。runNextは入力・期限待ちを除外してRing 3を実行する。
+/// spawnElf maps the ELF and heap. runNext runs Ring 3 processes that are ready to execute.
 module process;
 
 import address_space : AddressSpace, initPaging, initUserSpace, releaseUserSpace, mapBuiltin, mapUserHeap, resizeHeap, copyFromUser,
@@ -176,7 +176,7 @@ bool stop(uint pid)
     return true;
 }
 
-/// 保存確認が不要な窓に終了猶予を与える。繰り返し通知しても期限は延長しない。
+/// Give windows that need no save confirmation a grace period. Repeated close requests keep the original deadline.
 void requestClose(uint pid)
 {
     auto task = find(pid);
@@ -184,7 +184,7 @@ void requestClose(uint pid)
         task.closeDeadline = milliseconds() + 1000;
 }
 
-/// 終了通知より後に未保存状態が届いた場合は、確認前の強制終了を取り消す。
+/// If a dirty notification follows a close request, cancel forced termination so the user can confirm.
 void cancelCloseDeadline(uint pid)
 {
     auto task = find(pid);
@@ -280,7 +280,7 @@ bool runNext()
 
 private bool validResume(ref UserFrame frame)
 {
-    // ユーザーが変更できる状態を、次のIRETへ渡す前にABIの範囲へ戻す。
+    // Bring user-modifiable state back within ABI limits before the next IRET.
     frame.flags = (frame.flags & userStatusFlags) | userInterruptsEnabled;
     frame.cs = userCode;
     frame.ss = userData;

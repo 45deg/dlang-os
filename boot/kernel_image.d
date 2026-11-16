@@ -1,4 +1,4 @@
-/// 固定アドレスにリンクしたカーネルELFを検査し、PT_LOADを確保済みの物理ページに配置する。
+/// Validate the kernel ELF linked at a fixed address and load PT_LOAD segments into allocated physical pages.
 module kernel_image;
 
 import boot_info : directMapOffset;
@@ -81,7 +81,7 @@ struct KernelImage
         return true;
     }
 
-    /// physicalBaseはゼロ化済み。ELFに含まれないBSSはそのまま残す。
+    /// physicalBase is already zeroed. Leave BSS omitted from the ELF as zeroes.
     bool load(ulong physicalBase, ref PageTables tables) const nothrow @nogc
     {
         foreach (ref const segment; programs)
@@ -89,7 +89,7 @@ struct KernelImage
             const physical = physicalBase + (segment.address - kernelBase);
             const write = (segment.flags & flagWrite) ? pageWritable : 0;
             const executeProtection = (segment.flags & flagExecute) ? 0 : pageNoExecute;
-            // ダイレクトマップ経由でも、ELFの読み取り専用ページには書き込めない。
+            // Keep read-only ELF pages read-only through the direct map as well.
             if (!tables.map(segment.address, physical, segment.memoryBytes, write | executeProtection)
                 || !tables.map(directMapOffset + physical, physical, segment.memoryBytes, write | pageNoExecute))
                 return false;

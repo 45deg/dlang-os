@@ -1,9 +1,9 @@
-/// UEFIローダーとカーネルで画面・メモリ・RTCの起動情報を共有する。initBootInfoで受け取る。
+/// Share display, memory, and RTC boot information between the UEFI loader and the kernel. initBootInfo receives it.
 module boot_info;
 
 import calendar : DateTime;
 
-// 起動時に確保した物理ページを上位にマップする。ユーザープロセスでも同じ位置を使う。
+// Map physical pages allocated at boot into the higher half, at the same addresses in every user process.
 enum ulong directMapOffset = 0xffff_8000_0000_0000;
 enum ulong bootPhysicalLimit = 32UL << 40;
 
@@ -28,7 +28,7 @@ struct BootInfo
     ulong rtcTicks;
     ulong usableKiB;
     size_t rangeCount;
-    MemoryRange[128] ranges; // 容量超過時はローダーが起動を拒否する。
+    MemoryRange[128] ranges; // The loader refuses to boot if the range count exceeds this capacity.
 }
 
 static assert(BootFramebuffer.sizeof == 24 && BootInfo.sizeof <= 4096);

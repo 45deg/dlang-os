@@ -1,5 +1,5 @@
-/// デスクトップとウィンドウの重なり順を管理し、入力から描画と画面転送を更新する。
-/// launchでアプリを起動し、syncAppWindowsで終了やファイルを開く要求を反映する。
+/// Manage the desktop and window stacking order. Redraw and present the affected regions in response to input.
+/// launch starts apps, and syncAppWindows handles exits and file-open requests.
 module desktop;
 
 import calendar : DateTime, format;
@@ -43,7 +43,7 @@ struct Desktop
     private size_t menuSelection;
     private const(char)[] notice;
 
-    // 番号は窓を閉じるまで固定。orderは手前に出したときだけ並べ替える。
+    // Window slots stay fixed until close. Move a slot to the end of order to bring its window to the front.
     private Window[windowLimit] windows;
     private size_t[windowLimit] order;
     private size_t windowCount;
@@ -115,7 +115,7 @@ struct Desktop
 
     private void present(Rect damage)
     {
-        // RAM上のデスクトップを使い回せるよう、ポインタは転送の間だけ合成する。
+        // Composite the pointer only during presentation so the desktop buffer can be reused.
         pointer.draw(screen);
         screen.present(damage);
         pointer.erase(screen);

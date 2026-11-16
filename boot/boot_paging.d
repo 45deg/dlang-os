@@ -1,4 +1,4 @@
-/// BootPagesはUEFIで確保した連続領域を分割する。PageTablesはカーネルと引き渡しコードをマップする。
+/// BootPages subdivides a contiguous UEFI allocation. PageTables maps the kernel and handoff code.
 module boot_paging;
 
 import ldc.llvmasm : __asm;
@@ -48,7 +48,7 @@ struct PageTables
         pages = &pool;
     }
 
-    /// 仮想アドレスと物理アドレスはページ境界に揃える。既存エントリには上書きしない。
+    /// Align both addresses to page boundaries. Leave existing entries intact.
     bool map(ulong address, ulong physical, ulong bytes, ulong flags, bool allowIdentical = false) nothrow @nogc
     {
         if (root == 0)
@@ -97,8 +97,8 @@ bool supportsKernelPaging() nothrow @nogc
     return (extendedFeatures & (1U << 20)) != 0; // NX
 }
 
-// RCX=CR3、RDX=スタック末尾、R8=ELF入口、R9=BootInfo。CR3の切り替え後は
-// ファームウェアのスタックに触れず、SysVの第1引数をRDIに置いてカーネルへ入る。
+// RCX = CR3, RDX = stack top, R8 = ELF entry, R9 = BootInfo. After switching CR3,
+// enter the kernel with the first SysV argument in RDI and avoid using the firmware stack.
 extern(C) void enterKernel(ulong, ulong, ulong, ulong) nothrow @nogc
 {
     asm pure nothrow @nogc {
@@ -115,7 +115,7 @@ extern(C) void enterKernel(ulong, ulong, ulong, ulong) nothrow @nogc
         or RAX, 0x10000; // CR0.WP
         mov CR0, RAX;
         mov RAX, CR4;
-        and RAX, -129; // PGEを落とし、ファームウェアのグローバルTLBエントリを破棄する。
+        and RAX, -129; // Clear PGE to discard the firmware's global TLB entries.
         mov CR4, RAX;
         mov CR3, R10;
         mov RSP, R11;

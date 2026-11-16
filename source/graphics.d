@@ -1,4 +1,4 @@
-/// 矩形とASCII文字をRAMに合成し、presentで指定範囲をUEFIから引き継いだフレームバッファへ転送する。
+/// Composite rectangles and ASCII text in RAM. present copies the requested region to the framebuffer inherited from UEFI.
 module graphics;
 
 import font : glyphFor, largeTextWidth, textWidth;
@@ -153,7 +153,7 @@ struct Screen
         }
     }
 
-    /// 描き終えた画素だけを、画面側のピッチに合わせて行単位で転送する。
+    /// Copy only finished pixels, one row at a time, using the display's pitch.
     void present(Rect damage)
     {
         const left = maximum(0, damage.x);

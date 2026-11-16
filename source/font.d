@@ -1,4 +1,4 @@
-/// IBM Plex Mono Mediumを元にしたASCII字形。2サイズそれぞれの画素濃度を組み込む。
+/// Embed per-pixel coverage for two sizes of ASCII glyphs derived from IBM Plex Mono Medium.
 module font;
 
 enum int textWidth = 8;

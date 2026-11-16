@@ -1,4 +1,4 @@
-/// UART上のシェル。Shell.pollで1行を組み立て、dispatchでファイルなどを操作する。
+/// Run the shell over the UART. Shell.poll assembles a line, and dispatch handles file operations and other commands.
 module shell;
 
 import application : launchFile;
@@ -34,8 +34,8 @@ struct Shell
         writeText("dlang> ");
     }
 
-    /// CPUを使い切るプロセスと並行しても転送が進むよう、受信をまとめて処理する。
-    /// 上限を設け、連続入力がGUIとスケジューラを独占しないようにする。
+    /// Process input in batches so transfers keep moving alongside CPU-bound processes.
+    /// Cap the batch so sustained input leaves time for the GUI and scheduler.
     bool poll()
     {
         bool progressed;
@@ -117,7 +117,7 @@ struct Shell
     }
 }
 
-/// putの受信中は通常の行入力と分ける。指定サイズが揃った転送だけを保存する。
+/// Receive put data separately from command lines. Save only transfers that match the declared size.
 private struct HexUpload
 {
     bool active;
@@ -246,7 +246,7 @@ private int hexValue(char c)
     return -1;
 }
 
-/// 矢印キーなどが送るCSI/SS3シーケンスを文字入力と区別する。
+/// Distinguish CSI and SS3 sequences, such as those sent by arrow keys, from text input.
 private struct TerminalEscape
 {
     private enum State { idle, escape, sequence }
@@ -437,7 +437,7 @@ private void writeFile(scope const(char)[] argument)
     while (separator < argument.length && argument[separator] != ' ')
         ++separator;
     const name = argument[0 .. separator];
-    // 名前の後ろの区切り1文字だけを除き、残りの空白は本文に残す。
+    // Consume exactly one delimiter after the name and preserve the remaining whitespace in the file.
     const text = separator < argument.length ? argument[separator + 1 .. $] : null;
     printResult(save(name, text), "Saved.");
 }
@@ -567,7 +567,7 @@ private void printMemory()
 
 private void writeUnsigned(ulong value)
 {
-    char[20] digits = void; // ulongを10進表記したときの最大桁数
+    char[20] digits = void; // Maximum decimal digits in a ulong.
     size_t first = digits.length;
     do
     {

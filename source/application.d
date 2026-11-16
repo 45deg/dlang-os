@@ -1,4 +1,4 @@
-/// DlangFS上のELFを読み込み、独立したユーザープロセスとして起動する。
+/// Load an ELF from DlangFS and start it as an independent user process.
 module application;
 
 import app_registry : App, registration;

@@ -1,4 +1,4 @@
-/// ローカルAPICのワンショット割り込みで、ユーザープロセスの実行時間を区切る。
+/// Bound user-process execution time with local APIC one-shot interrupts.
 module apic_timer;
 
 import address_space : mapLocalApic;
@@ -35,19 +35,19 @@ bool initTimer()
         if (registers is null)
             return false;
     }
-    // PICのIRQ4を受けるため、LINT0をExtINTに設定する。
+    // Set LINT0 to ExtINT to receive IRQ4 from the PIC.
     writeRegister(0x350, 0x700);
     writeRegister(taskPriority, 0);
     writeRegister(spurious, 0x1ff);
     writeRegister(timerConfig, maskInterrupt | timerVector);
     writeRegister(initialCount, 0);
-    writeRegister(divideConfig, 0x03); // APICの基準クロックの1/16
+    writeRegister(divideConfig, 0x03); // Divide the APIC base clock by 16.
     writeRegister(initialCount, uint.max);
     const started = milliseconds();
     while (milliseconds() - started < 20) {}
     const elapsed = uint.max - readRegister(0x390);
     writeRegister(initialCount, 0);
-    quantumTicks = elapsed / 4; // 5 msの実行枠
+    quantumTicks = elapsed / 4; // 5 ms time slice.
     if (quantumTicks == 0 || elapsed == uint.max)
         return false;
     writeRegister(timerConfig, timerVector);
@@ -81,7 +81,7 @@ private uint readRegister(uint offset)
                   : volatileLoad(registers + offset / uint.sizeof);
 }
 
-/// PS/2はまだポーリング入力なので、最長約1 msでカーネルへ戻る。
+/// PS/2 input uses polling, so return to the kernel within about 1 ms.
 void idle()
 {
     if (!available) return;

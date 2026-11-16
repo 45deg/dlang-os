@@ -1,4 +1,4 @@
-/// ブート時の上位マッピングを共有し、プロセスごとにコード、スタック、ELF用ヒープをマップする。
+/// Share the boot-time higher-half mapping and map code, stack, and ELF heap per process.
 module address_space;
 
 import boot_info : directMapOffset;
@@ -8,7 +8,7 @@ import user_abi : userHeapBase, userHeapInitialBytes, userHeapLimitBytes, callEr
 
 enum ulong userCodeAddress = 0x0040_0000;
 enum uint pageBytes = 4096;
-// ELF、ヒープ、ガード付きスタックを別々の仮想領域に置く。物理ページは必要時に確保する。
+// Put the ELF, heap, and guarded stack in separate virtual ranges. Allocate physical pages as needed.
 enum ulong userImageEnd = userHeapBase;
 enum ulong userStackTop = 0x8000_0000;
 enum ulong userStackBase = userStackTop - 64 * 1024;
@@ -16,11 +16,11 @@ private enum ulong userAddressEnd = userStackTop;
 static assert(userHeapBase + userHeapLimitBytes < userStackBase);
 private enum ulong apicAddress = 0xffff_c000_0000_0000;
 private enum ulong physicalMask = 0x000f_ffff_ffff_f000;
-private enum ulong owned = 1 << 9; // OS用ビット。共有コードは回収しない。
+private enum ulong owned = 1 << 9; // OS-defined bit. Shared code pages are exempt from reclamation.
 private enum ulong present = 1;
 private enum ulong writable = 2;
 private enum ulong user = 4;
-private enum ulong noCache = 0x18; // PCDとPWTを立ててMMIOをキャッシュしない
+private enum ulong noCache = 0x18; // Set PCD and PWT to disable caching for MMIO.
 private enum ulong huge = 0x80;
 private enum ulong noExecute = 1UL << 63;
 
@@ -49,7 +49,7 @@ void initPaging()
 {
     const cr3 = readCr3();
     kernelRoot = directPage(cr3 & physicalMask);
-    // ローダーを等価マップしていた下位半分は、上位のカーネルへ移った時点で外せる。
+    // Remove the loader's lower-half identity mapping once control moves into the higher-half kernel.
     kernelRoot.words[0 .. 256] = 0;
     writeCr3(cr3);
 }
@@ -68,7 +68,7 @@ bool initUserSpace(ref AddressSpace space)
     return true;
 }
 
-/// カーネルのCR3に戻ってから、部分的な初期化も含めて下位側の所有ページを回収する。
+/// After switching back to the kernel's CR3, reclaim owned lower-half pages, even after partial initialization.
 void releaseUserSpace(ref AddressSpace space)
 {
     if (space.root !is null)
@@ -94,7 +94,7 @@ private void releaseTree(ulong physical, uint levels)
     freePage(physical);
 }
 
-/// ページテーブルも必要な枝だけ作る。失敗時の空の枝はpruneTablesまたは終了時に回収する。
+/// Allocate page table branches as needed. On failure, pruneTables or process exit reclaims empty branches.
 private ulong* leafFor(ref AddressSpace space, ulong address, bool create)
 {
     auto table = space.root;
@@ -149,7 +149,7 @@ bool mapUserHeap(ref AddressSpace space)
     return resizeHeap(space, userHeapInitialBytes) != callError;
 }
 
-/// 要求サイズをページ境界へ丸めて返す。拡張失敗時は元のサイズと内容を維持する。
+/// Round the requested size up to a page boundary and return it. A failed expansion preserves size and contents.
 ulong resizeHeap(ref AddressSpace space, ulong requestedBytes)
 {
     if (requestedBytes > userHeapLimitBytes) return callError;
@@ -187,7 +187,7 @@ private void unmapHeap(ref AddressSpace space, ulong start, ulong end)
     }
 }
 
-// 空になったテーブルを回収する。ルートの上位半分はカーネル共有なので触らない。
+// Reclaim empty tables. The kernel owns the shared upper half of the root.
 private bool pruneTables(Page* table, uint levels)
 {
     bool empty = true;
@@ -233,7 +233,7 @@ bool mapImage(ref AddressSpace space, ulong address, ulong memorySize,
     return true;
 }
 
-/// カーネルのCR3へ復帰後に呼ぶ。ユーザーが示した仮想アドレスを直接参照しない。
+/// Call after restoring the kernel's CR3. Avoid dereferencing user-supplied virtual addresses directly.
 bool copyFromUser(ref const AddressSpace space, ulong address, scope char[] output)
 {
     if (address < userCodeAddress || address >= userAddressEnd || output.length > userAddressEnd - address)
@@ -255,7 +255,7 @@ bool copyFromUser(ref const AddressSpace space, ulong address, scope char[] outp
     return true;
 }
 
-/// 入力イベントやファイルを、ユーザーが書き込めるページにだけ返す。
+/// Copy input events or file data only into pages writable by the user.
 bool copyToUser(ref const AddressSpace space, ulong address, scope const(char)[] input)
 {
     if (address < userCodeAddress || address >= userAddressEnd || input.length > userAddressEnd - address)

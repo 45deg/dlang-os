@@ -1,4 +1,4 @@
-/// デスクトップの壁紙、アプリアイコン、共通ボタンを描く。
+/// Draw the desktop wallpaper, app icons, and shared buttons.
 module desktop_theme;
 
 import font : textHeight, textWidth;
@@ -51,7 +51,7 @@ Rect menuItem(int height, App app)
 void drawWallpaper(ref Screen screen)
 {
     const height = screen.height - taskbarHeight;
-    // 横線ごとのグラデーションに、右から重なる斜面を組み合わせる。
+    // Layer slanted shapes from the right over a scanline gradient.
     foreach (y; 0 .. height)
     {
         const t = cast(uint) (y * 255 / height);

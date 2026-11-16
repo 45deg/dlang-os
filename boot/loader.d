@@ -1,5 +1,5 @@
-/// efiMainはESPのカーネルを読み、GOP・ページテーブル・GetTimeによるRTCスナップショットを準備する。
-/// finishBootは最終メモリマップを取得し、UEFIを終了してカーネルへ渡す。
+/// efiMain loads the kernel from the ESP and prepares GOP, page tables, and an RTC snapshot from GetTime.
+/// finishBoot gets the final memory map, exits UEFI boot services, and hands off to the kernel.
 module loader;
 
 import calendar : DateTime, validate;
@@ -45,14 +45,14 @@ extern(C) Status efiMain(Handle handle, SystemTable* system) nothrow @nogc
     if (status != success)
         return fail("Cannot read kernel.elf.", status);
 
-    // ファイルとUEFIのハンドルは、最終メモリマップを取る前に解放する。
+    // Release files and UEFI handles before taking the final memory map.
     Handoff handoff;
     status = prepareKernel(services, loaded, file, display, handoff);
     services.freePool(file.ptr);
     if (status != success)
         return fail("Cannot prepare the kernel image or page tables.", status);
 
-    // RTCへのアクセスはファームウェアに任せ、ExitBootServicesより前に一度だけ読む。
+    // Let the firmware access the RTC. Read it once before ExitBootServices.
     Time time;
     if (system.runtimeServices !is null && system.runtimeServices.getTime !is null
         && system.runtimeServices.getTime(&time, null) == success)
@@ -66,7 +66,7 @@ extern(C) Status efiMain(Handle handle, SystemTable* system) nothrow @nogc
     status = finishBoot(services, handle, handoff, exitAttempted);
     if (exitAttempted)
     {
-        // 失敗でもファームウェアが部分的に終了していることがある。
+        // The firmware may have partially shut down even if the call failed.
         fail("Cannot exit UEFI boot services.", status);
         haltCpu();
     }
@@ -95,7 +95,7 @@ private Status readKernel(BootServices* services, Handle device, out ubyte[] ima
     scope(exit) file.close(file);
 
     ulong bytes;
-    status = file.setPosition(file, ulong.max); // ファイル末尾
+    status = file.setPosition(file, ulong.max); // End of file.
     if (status != success)
         return status;
     status = file.getPosition(file, &bytes);
@@ -128,7 +128,7 @@ private Display findDisplay(BootServices* services) nothrow @nogc
     if (services.locateProtocol(&graphicsOutputGuid, null, cast(void**) &gop) != success)
         return Display.init;
 
-    // 既存のデスクトップと同じ解像度を優先する。なければ現在のモードを使う。
+    // Prefer the resolution used by the desktop. Fall back to the current mode if unavailable.
     foreach (mode; 0 .. gop.mode.maxMode)
     {
         GraphicsInfo* info;
@@ -212,8 +212,8 @@ private Status prepareKernel(BootServices* services, const(LoadedImage)* loaded,
     if (!kernel.parse(file))
         return loadError;
 
-    // 上位マッピングとダイレクトマップの両方にカーネルを含める。
-    // 各範囲の境界跨ぎと上位テーブル用にページを追加する。
+    // Include the kernel in both the higher-half mapping and the direct map.
+    // Budget extra pages for ranges crossing boundaries and for higher-level tables.
     const dataBytes = kernel.memoryBytes + stackBytes + pageBytes + roundToPage(display.backBufferBytes());
     const loaderBytes = roundToPage(loaded.imageSize);
     ulong freeTablePages;
@@ -272,7 +272,7 @@ private Status finishBoot(BootServices* services, Handle handle, ref Handoff han
         if (!exitAttempted && map !is null)
             services.freePool(map);
 
-    // バッファの確保やファームウェア内の処理でマップが変わる。古いキーで失敗したら取り直す。
+    // Allocating buffers and firmware work can change the map. Refresh it if the key is rejected.
     size_t capacity;
     foreach (_; 0 .. 8)
     {
@@ -343,7 +343,7 @@ private Status fail(scope const(char)[] message, Status status) nothrow @nogc
     return status;
 }
 
-/// 最終マップを構築するテーブル用領域を、現在の空きRAM量から見積もる。
+/// Estimate the table space for the final mapping from the current amount of free RAM.
 private bool estimateFreeTables(BootServices* services, out ulong pages) nothrow @nogc
 {
     size_t bytes, key, stride;
@@ -358,7 +358,7 @@ private bool estimateFreeTables(BootServices* services, out ulong pages) nothrow
     if (services.getMemoryMap(&bytes, buffer, &key, &stride, &versionNumber) != success
         || stride < MemoryDescriptor.sizeof || bytes % stride != 0)
         return false;
-    pages = 128; // 後続のUEFI確保と再試行による領域分割にも余裕を持たせる。
+    pages = 128; // Allow for later UEFI allocations and ranges split by retries.
     for (size_t offset; offset < bytes; offset += stride)
     {
         const entry = cast(const(MemoryDescriptor)*) (cast(ubyte*) buffer + offset);

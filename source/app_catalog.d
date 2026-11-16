@@ -1,4 +1,4 @@
-/// desktop.appsを検証し、登録表を起動時に一括で差し替える。文字列は専用バッファで保持する。
+/// Validate desktop.apps and replace the entire registry at boot. Keep its strings in a dedicated buffer.
 module app_catalog;
 
 import app_registry : AppRegistration, Icon, appLimit, defaultRegistrations, setRegistrations;

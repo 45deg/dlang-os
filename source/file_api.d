@@ -1,4 +1,4 @@
-/// アプリとDlangFSで共有するファイルの上限、世代、結果と入力検証。
+/// Define shared file limits, generations, results, and input validation for apps and DlangFS.
 module file_api;
 
 enum fileLimit = 16;

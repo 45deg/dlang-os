@@ -1,4 +1,4 @@
-/// ELF64実行ファイルのプログラムヘッダを読み、PT_LOADをユーザー空間に置く。
+/// Read ELF64 executable program headers and map PT_LOAD segments into user space.
 module elf;
 
 import address_space : AddressSpace, mapImage, pageBytes, userCodeAddress, userImageEnd;

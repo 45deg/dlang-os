@@ -1,4 +1,4 @@
-/// 512バイトのブロックI/O契約。ドライバは容量と読書き関数を登録し、上位層はポートを知らない。
+/// Define 512-byte block I/O. Drivers supply capacity and read/write functions and keep port access internal.
 module block_device;
 
 enum sectorBytes = 512;
@@ -16,7 +16,7 @@ struct BlockDevice
         return lba < sectorCount && readBlock !is null && readBlock(context, lba, sector);
     }
 
-    /// 成功時には書き込みが永続化している。キャッシュを使うドライバはここでフラッシュする。
+    /// A successful write is persistent. Drivers with caches must flush them here.
     bool write(ulong lba, ref const Sector sector) nothrow @nogc
     {
         return lba < sectorCount && writeBlock !is null && writeBlock(context, lba, sector);

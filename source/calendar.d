@@ -1,4 +1,4 @@
-/// RTCから受け取る暦と経過秒の計算。validateで入力を検査し、advanceで日付境界を進める。
+/// Handle RTC calendar values and elapsed seconds. validate checks the input, and advance rolls over date boundaries.
 module calendar;
 
 struct DateTime

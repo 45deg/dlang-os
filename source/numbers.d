@@ -1,4 +1,4 @@
-/// 10進の数値を呼び出し元が用意したバッファへ書く。ランタイムの文字列生成は使わない。
+/// Write decimal numbers into a caller-supplied buffer without runtime string construction.
 module numbers;
 
 const(char)[] decimalText(ulong value, return ref char[20] buffer) pure nothrow @nogc

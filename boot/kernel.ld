@@ -1,5 +1,5 @@
-/* UEFIローダーが読み込む上位アドレスのELF。コード、読み取り専用データ、
-   書き込み可能なデータを別々のロードセグメントに置く。 */
+/* Higher-half ELF loaded by UEFI. Put code, read-only data,
+   and writable data in separate load segments. */
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(kernelMain)
 

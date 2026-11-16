@@ -1,4 +1,4 @@
-/// COM1のUART。受信IRQでリングバッファへ取り込み、シェルがtryReadByteで消費する。
+/// Receive COM1 bytes into a ring buffer from the IRQ handler. The shell consumes them through tryReadByte.
 module serial;
 
 import cpu : readPort, writePort;
@@ -11,7 +11,7 @@ private enum ushort lineControl = com1 + 3;
 private enum ushort modemControl = com1 + 4;
 private enum ushort lineStatus = com1 + 5;
 
-// DLABが立っている間、先頭2ポートはデータや割り込みではなく分周値を指す。
+// When DLAB is set, the first two ports access the baud divisor instead of data and interrupt control.
 private enum ushort divisorLow = com1;
 private enum ushort divisorHigh = com1 + 1;
 private enum ubyte divisorLatchAccess = 0x80;
@@ -31,19 +31,19 @@ void initSerial()
     writePort(lineControl, eightBitsNoParityOneStopBit);
     writePort(interruptEnable, 0);
     writePort(lineControl, divisorLatchAccess);
-    // COM1の基準レートは115200 baud。分周値1でそのまま使う。
+    // Use a divisor of 1 for the COM1 base rate of 115200 baud.
     writePort(divisorLow, 1);
     writePort(divisorHigh, 0);
     writePort(lineControl, eightBitsNoParityOneStopBit);
-    writePort(fifoControl, 0x07); // FIFOを有効にし、送受信バッファを空にする
-    writePort(modemControl, 0x03); // DTRとRTSを立てる
+    writePort(fifoControl, 0x07); // Enable FIFO and clear both transmit and receive buffers.
+    writePort(modemControl, 0x03); // Assert DTR and RTS.
 }
 
-// IDTとPICのIRQ4経路を準備してから呼ぶ。
+// Call after setting up the IDT and routing IRQ4 through the PIC.
 void enableReceiveInterrupts()
 {
     interruptsEnabled = true;
-    writePort(modemControl, 0x0b); // OUT2でPCのIRQ線を有効にする。
+    writePort(modemControl, 0x0b); // Use OUT2 to enable the PC IRQ line.
     writePort(interruptEnable, 1);
 }
 
@@ -55,11 +55,11 @@ extern(C) void serialReceiveInterrupt()
         ++receivedCount;
     }
     if (receivedCount == receivedBytes.length)
-        writePort(interruptEnable, 0); // 消費再開までIRQの連発を止める。
-    writePort(0x20, 0x20); // PIC IRQ4のEOI。ExtINTはAPICのISRを使わない。
+        writePort(interruptEnable, 0); // Suppress repeated IRQs until the reader resumes draining the buffer.
+    writePort(0x20, 0x20); // Send EOI for PIC IRQ4. ExtINT does not use the APIC's ISR.
 }
 
-/// カーネルのIF=0で呼ぶ。IRQとの間でリングバッファ更新を直列化する。
+/// Call in the kernel with IF=0 to serialize ring buffer updates with the IRQ handler.
 bool tryReadByte(out char received)
 {
     if (receivedCount != 0)
@@ -90,7 +90,7 @@ void writeText(scope const(char)[] text)
         writeByte(byteToSend);
 }
 
-/// UARTが最後のバイトを送信し終えるまで待つ。
+/// Wait for the UART to finish transmitting the last byte.
 void flushSerial()
 {
     while ((readPort(lineStatus) & transmitIdle) == 0)

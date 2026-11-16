@@ -1,4 +1,4 @@
-/// カーネルに同梱するD製ユーザープログラム。固定アドレスやカーネルの関数を参照しない。
+/// Built-in D user programs avoid references to fixed addresses or kernel functions.
 module user_program;
 
 import address_space : pageBytes, userCodeAddress;
@@ -9,7 +9,7 @@ import user_abi : Call;
 
 enum Program : ulong { counter, spin, exit, fault, elf }
 
-/// 引数はプログラムの種類。再配置時に使う外部参照を作らない。
+/// The argument selects the program. Avoid external references so the code can be relocated.
 @section(".user_app")
 extern(C) noreturn userMain(Program program, ulong pid) nothrow @nogc
 {
@@ -17,12 +17,12 @@ extern(C) noreturn userMain(Program program, ulong pid) nothrow @nogc
         __asm!ulong("int $$0x80", "={rax},0,~{memory}", Call.exit);
     else if (program == Program.fault)
     {
-        // 未使用の末尾への書き込みを試し、読み取り専用コードでページフォルトを起こす。
+        // Try writing to the unused tail of read-only code to trigger a page fault.
         volatileStore(cast(ubyte*) (userCodeAddress + pageBytes - 1), 0);
     }
     else if (program == Program.counter)
     {
-        // ユーザースタックを経由して値を保持し、公開する。保存先はプロセスごとに独立。
+        // Store and publish the value through the user stack, which is private to each process.
         ulong count = 0;
         ulong stackOwner = void;
         volatileStore(&stackOwner, pid);
@@ -35,7 +35,7 @@ extern(C) noreturn userMain(Program program, ulong pid) nothrow @nogc
         }
     }
 
-    // 自分では一度もyieldしない。タイマーで実行を取り戻せることを確認できる。
+    // Never yield explicitly, so the test can check that the timer preempts this program.
     while (true)
         __asm("pause", "~{memory}");
 }
