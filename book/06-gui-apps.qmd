@@ -1,0 +1,154 @@
+# GUIデスクトップとRing 3ユーザーアプリ
+
+これまでの章で、ブート・メモリ・割り込み・プロセス・ストレージのすべてが揃いました。本章では、それらの上に構築された **GUI デスクトップ** と、独立した Ring 3 プロセスとして動く **GUI アプリケーション**（`counter.elf`）の仕組みを読み解きます。
+
+## カーネルとアプリを結ぶ描画モデル
+
+Dlang OS の GUI アプリは、フレームバッファのピクセル配列を直接触ることはできません。代わりにアプリは、矩形塗りつぶしやテキスト描画を表す **描画命令リスト（`GuiFrame`）** をメモリ上に組み立て、`INT 0x80`（`Call.guiPresent`）でカーネルへ提出します。
+
+```{mermaid}
+flowchart LR
+    A["Ring 3 アプリ (counter.elf)"] -- "Call.guiWait (イベント待機)" --> B["カーネル gui.d"]
+    B -- "GuiInput (座標・キー・時刻)" --> A
+    A -- "Call.guiPresent (GuiFrame 描画命令)" --> B
+    B -- "検証してクリッピング合成" --> C["backBuffer (RAM) → フレームバッファ"]
+```
+
+カーネル側の `source/gui.d` は、ユーザー空間から `GuiFrame` をコピーしたあと、コマンド数、テキスト範囲、描画命令の寸法などを検査してからウィンドウへ反映します。
+
+```{.d filename="source/gui.d (L202-L263)"}
+private ulong poll(ref GuiWindow window, ref const AddressSpace space, ulong address)
+{
+    GuiInput input;
+    if (window.count != 0)
+        input = window.events[window.head];
+    input.width = window.width;
+    input.height = window.height;
+    input.focused = window.focused;
+    input.now = milliseconds();
+    input.mounted = isMounted();
+    input.diskGeneration = generation();
+    if (!copyToUser(space, address, (cast(const(char)*) &input)[0 .. GuiInput.sizeof]))
+        return callError;
+    window.inputChanged = false;
+    window.seenDiskGeneration = input.diskGeneration;
+    window.seenMounted = input.mounted;
+    if (window.count != 0)
+    {
+        window.head = cast(ubyte) ((window.head + 1) % window.events.length);
+        --window.count;
+    }
+    return 0;
+}
+
+private ulong present(ref GuiWindow window, ref const AddressSpace space, ulong address)
+{
+    if (!copyFromUser(space, address, (cast(char*) &incoming)[0 .. GuiFrame.sizeof])
+        || incoming.commandCount > incoming.commands.length || incoming.textCount > incoming.text.length
+        || incoming.titleLength > incoming.title.length || incoming.dirty > 1)
+        return callError;
+    foreach (char c; incoming.title[0 .. incoming.titleLength])
+        if (c < ' ' || c > '~')
+            return callError;
+    foreach (char c; incoming.text[0 .. incoming.textCount])
+        if (c < ' ' || c > '~')
+            return callError;
+    size_t nextText;
+    foreach (ref command; incoming.commands[0 .. incoming.commandCount])
+    {
+        if (command.textLength == 0)
+        {
+            if (command.width <= 0 || command.height <= 0)
+                return callError;
+        }
+        else
+        {
+            if ((command.height != 1 && command.height != 2) || command.textOffset != nextText)
+                return callError;
+            nextText += command.textLength;
+            if (nextText > incoming.textCount)
+                return callError;
+        }
+    }
+    if (nextText != incoming.textCount)
+        return callError;
+
+    window.frame = incoming;
+    if (incoming.dirty)
+        cancelCloseDeadline(window.pid);
+    window.changed = true;
+    return 0;
+}
+```
+
+`poll()`（L213-L222）では、`copyToUser` が成功した**あとで**初めてイベントキュー（`window.head`, `window.count`）を消費している点に注目してください。不正なアドレスを渡されたときにイベントを失わないための配慮です。また `present()`（L226-L263）では、コマンド数、テキスト長、印字可能 ASCII 文字範囲、`textOffset` の連続性とテキスト範囲の終端を検証しています。すべての検査を通過したあとで `window.frame` を更新するため、不正な描画命令が届いても前のフレームを保持します。
+
+そして描画自体も高速化のため、`source/graphics.d` が RAM 上の `backBuffer` にデスクトップ・ウィンドウ・マウスカーソルを合成し、変更があった領域だけを UEFI から引き継いだフレームバッファへ転送しています。
+
+## Ring 3 GUI アプリの実例：`counter.d`
+
+`apps/counter/counter.d` の `appMain` を見てみましょう。importと補助関数 `text` は省略しています。
+
+```{.d filename="apps/counter/counter.d (L8-L50)"}
+extern(C) noreturn appMain() nothrow @nogc
+{
+    if (send(Call.guiCreate, "Counter") == callError)
+        exitApp();
+    auto frame = cast(GuiFrame*) userHeapBase;
+    ulong value, lastUpdate;
+    bool paused, first = true;
+    while (true)
+    {
+        GuiInput input = void;
+        if (call(Call.guiWait, cast(ulong) &input, first ? 0 : paused ? waitForever : 50) == callError)
+            exitApp();
+        if (input.event == GuiEvent.close)
+            exitApp();
+        const toggle = input.event == GuiEvent.click
+            || (input.event == GuiEvent.key && (input.key == 10 || input.key == 32));
+        if (toggle)
+            paused = !paused;
+        bool changed = first || toggle;
+        if (!paused && (first || input.now - lastUpdate >= 50))
+        {
+            ++value;
+            lastUpdate = input.now;
+            call(Call.publish, value);
+            changed = true;
+        }
+        if (!changed)
+            continue;
+        frame.commandCount = frame.textCount = 0;
+        frame.commands[frame.commandCount++] = DrawCommand(0, 0, cast(short) input.width,
+            cast(short) input.height, 0xffffff, 0, 0);
+        text(*frame, 13, 11, "User process", 0x607584, 1);
+        char[20] digits;
+        size_t start = digits.length;
+        auto number = value;
+        do { digits[--start] = cast(char) ('0' + number % 10); number /= 10; } while (number);
+        text(*frame, 13, 34, paused ? "Paused" : digits[start .. $], 0x152843, 2);
+        text(*frame, 13, 71, "Click or Enter sends input", 0x607584, 1);
+        if (call(Call.guiPresent, cast(ulong) frame) == callError)
+            exitApp();
+        first = false;
+    }
+}
+```
+
+このループは、入力を待ち、状態が変わったときに描画命令を送ります。
+
+1. **ウィンドウ作成（L10）**: `Call.guiCreate` で `"Counter"` というタイトルのウィンドウを要求します。
+2. **イベント待機（L18）**: `Call.guiWait` にタイムアウト値を渡します。初回は0で即座に状態を取得し、その後は動作中なら `50` ms、一時停止中（`paused`）は `waitForever` を渡します。未配送の入力や状態変更がなければ待機し、その間はユーザーコードを実行しません。フォーカスやディスク状態の変更でも待機は解除されます。
+3. **終了通知の処理（L20-L21）**: ウィンドウの × ボタンが押されると `GuiEvent.close` が届くので、自ら `exitApp()` で終了します。
+4. **描画と提出（L36-L47）**: 初期ヒープ先頭（`userHeapBase`）に置いた `GuiFrame` に背景塗りつぶしとテキストの `DrawCommand` を詰め、`Call.guiPresent` でカーネルへ送ります。
+
+::: {.callout-tip}
+### さらに先へ進むには
+本書では `-betterC` ベースのカーネルと `counter.d` を中心に読み解きましたが、Dlang OS にはさらに以下の発展的な要素が含まれています。
+
+- **内蔵デスクトップアプリ群** (`apps/builtin/`): Files、Editor、Calc、Game（`snake.d`）、Monitorの実装。`source/graphics.d` の `version (GuiApp)` を使って、カーネルと同じ `Screen` API で描画命令を組み立てています。
+- **標準 `druntime` と Phobos の移植** (`docs/druntime.md`, `docs/phobos.md`): `PT_TLS` と `heapResize` システムコールを活用し、`std.stdio.writeln` を使う ELF バイナリを動かす実験（`make test-druntime`, `make test-phobos`）。
+- **シリアルシェル** (`source/shell.d`): `ls`, `cat`, `put`, `get`, `run`, `ps`, `kill` などのコマンド実装。
+
+次章では標準ランタイムの起動と出力経路を追います。シェルを使ってプロセスやファイルの動作を確かめる手順は、第8章で扱います。
+:::

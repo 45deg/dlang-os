@@ -1,0 +1,148 @@
+# カーネルの初期化と物理メモリ・時刻管理
+
+UEFI ローダーから制御を受け取ったカーネルは、まずシリアル出力、時刻源、ストレージ、プロセス管理、GUIを順に立ち上げ、あとはイベントループを回し続けます。本章では `source/kernel.d` の全体像と、OSの土台となる時刻管理・物理メモリ管理の仕組みを見ていきます。
+
+## カーネルのエントリポイント：`kernelMain`
+
+`source/kernel.d` の `kernelMain` に、初期化の順序とメインループがまとまっています。物理メモリ管理の初期化は `initProcesses` の中で行います。
+
+```{.d filename="source/kernel.d (L18-L47)"}
+extern(C) noreturn kernelMain(BootInfo* info) nothrow @nogc
+{
+    initBootInfo(info);
+    initSerial();
+
+    writeText("Dlang OS (x86_64)\r\nType 'help' for commands.\r\n");
+    if (!initClock())
+    {
+        writeText("Clock calibration failed.\r\n");
+        haltCpu();
+    }
+    if (!mount())
+        writeText("Data disk unavailable.\r\n");
+
+    if (!initProcesses())
+        writeText("User processes unavailable.\r\n");
+
+    if (!desktop.init())
+        writeText("Framebuffer unavailable. Use the serial shell.\r\n");
+
+    shell.start();
+    while (true)
+    {
+        const serialProgress = shell.poll();
+        desktop.poll();
+        const ranProcess = runNext();
+        if (!ranProcess && !serialProgress && !desktop.hasPendingInput())
+            idle();
+    }
+}
+```
+
+メインループ（L39-L46）は、次の順に処理します。
+
+1. `shell.poll()` でシリアルポートからのコマンド入力を処理する。
+2. `desktop.poll()` で PS/2 マウス・キーボードの入力とウィンドウ描画を更新する。
+3. `runNext()` で実行可能なユーザープロセスを 1 つ選んで実行する。
+4. ユーザープロセスを実行せず、シリアル入力の処理も進まず、保留中のデスクトップ入力もなければ `idle()` を呼ぶ。タイマーが利用可能なら `HLT` で割り込みを待つ。
+
+## 時刻源の立ち上げ：PIT による TSC の校正
+
+CPU の `RDTSC` 命令で読める TSC（Time Stamp Counter）は高速で高精度なカウンタですが、1 秒間に何回カウントが進むか（周波数）は環境によって異なります。そこで Dlang OS では、古くから PC に搭載されている **PIT（Programmable Interval Timer）のチャネル 2**（固定周波数 `1,193,182 Hz`）を基準時計として使い、TSC の周波数を起動時に計測（校正）します。
+
+```{.d filename="source/clock.d (L10-L51)"}
+private enum pitHz = 1_193_182;
+private enum ushort calibrationCount = 23_864; // About 20 ms.
+private __gshared ulong ticksPerSecond, epoch;
+
+nothrow @nogc:
+
+bool initClock()
+{
+    const original = readPort(0x61);
+    scope(exit) writePort(0x61, original);
+    writePort(0x61, cast(ubyte) (original & ~3));
+    writePort(0x43, 0xb0); // channel 2, low/high byte, mode 0
+    writePort(0x42, cast(ubyte) calibrationCount);
+    writePort(0x42, cast(ubyte) (calibrationCount >> 8));
+    const start = ticks();
+    writePort(0x61, cast(ubyte) ((original & ~2) | 1));
+    // Use an iteration limit before the time source is initialized so a faulty PIT cannot cause an indefinite wait.
+    foreach (_; 0 .. 10_000_000)
+    {
+        if (!(readPort(0x61) & 0x20))
+            continue;
+        const elapsed = ticks() - start;
+        ticksPerSecond = elapsed * pitHz / calibrationCount;
+        epoch = ticks();
+        return ticksPerSecond >= 1000;
+    }
+    return false;
+}
+
+ulong milliseconds()
+{
+    const elapsed = ticks() - epoch;
+    return elapsed / ticksPerSecond * 1000 + elapsed % ticksPerSecond * 1000 / ticksPerSecond;
+}
+
+/// Add seconds measured by the same TSC to the RTC snapshot taken before kernel startup.
+bool currentDateTime(out DateTime time)
+{
+    if (!bootDateTimeValid() || ticksPerSecond == 0) return false;
+    time = bootDateTime();
+    return advance(time, (ticks() - bootDateTimeTicks()) / ticksPerSecond);
+}
+```
+
+校正と時刻換算では、次の処理を行っています。
+
+- **試行回数の上限**: まだ `milliseconds()` が使えない段階なので、PIT が壊れていても無限ループに陥らないよう、`foreach (_; 0 .. 10_000_000)` と試行回数で打ち切っています（L27）。
+- **オーバーフロー対策**: `milliseconds()`（L42）では `elapsed * 1000 / ticksPerSecond` と書くと `elapsed` が大きいときに 64 ビット乗算がオーバーフローするおそれがあるため、商と余りに分けて計算しています。
+
+また、第1章でローダーが取得した RTC スナップショット（`bootDateTime()` と `bootDateTimeTicks()`）に、この `ticksPerSecond` を使って経過秒数を足し合わせることで、`currentDateTime` が現在日時を算出します（L46-L51）。
+
+## 物理メモリの管理：空きページに埋め込むフリーリスト
+
+OS がプロセスを起動したりページテーブルを作ったりするには、4 KiB 単位の空き物理ページを高速に確保（`allocatePage`）し、不要になったら返却（`freePage`）できる仕組みが必要です。
+
+`source/physical_memory.d` は、空きページを連結リストで管理します。
+
+```{.d filename="source/physical_memory.d (L11-L37)"}
+void initPhysicalMemory()
+{
+    foreach (range; availableRanges())
+        foreach (page; 0 .. range.pages)
+            freePage(range.physical + page * pageBytes);
+    totalCount = freeCount;
+}
+
+ulong allocatePage()
+{
+    const page = freeHead;
+    if (page == 0)
+        return 0;
+    auto words = cast(ulong*) (directMapOffset + page);
+    freeHead = words[0];
+    --freeCount;
+    words[0 .. pageBytes / ulong.sizeof] = 0;
+    return page;
+}
+
+/// Return only pages owned by the caller, once per page. Shared code and MMIO may not be freed here.
+void freePage(ulong page)
+{
+    *cast(ulong*) (directMapOffset + page) = freeHead;
+    freeHead = page;
+    ++freeCount;
+}
+```
+
+空きページの先頭8バイトに、次の空きページの物理アドレスを保存します。これが **Intrusive Free List（埋め込み型フリーリスト）** です。カーネルはダイレクトマップを通じてこの値を読み書きするため、ページごとの管理配列を別に確保する必要がありません。
+
+1. `freePage` は、`directMapOffset + page` の先頭に現在の `freeHead` を書き込み、`freeHead = page` に更新します（$O(1)$）。
+2. `allocatePage` は、`freeHead` から次のページを読み出して `freeHead` を進め、**ページ全体を 0 クリアしてから** 呼び出し元へ返します（$O(1)$）。ゼロクリアを保証することで、前任プロセスの機密データが次のプロセスに漏れるのを防いでいます。
+
+ページの大きさは4 KiBで固定なので、確保と返却の処理量は管理ページ数によらず一定です。ただし、確保にはページ全体のゼロ化が伴います。また、`freePage` は二重解放や所有権を検査しません。呼び出し側が、所有するページを一度だけ返す必要があります。
+
+次章では、Ring 0とRing 3の切り替え、割り込み、プリエンプションを扱います。

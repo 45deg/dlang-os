@@ -1,0 +1,169 @@
+# PCI/ATAドライバと2世代ファイルシステム DlangFS
+
+OS が再起動してもデータを失わないためには、ディスク装置を見つけてセクタを読み書きするストレージドライバと、その上にファイルという抽象化を作るファイルシステムが必要です。本章では、`source/ata.d` の ATA PIO ドライバと、`source/filesystem.d` の2世代コピーを使うファイルシステム **DlangFS** を学びます。
+
+## PCI IDE 検出と ATA PIO ドライバ
+
+`source/ata.d` は、`source/pci.d` の `scanPci` を使って PCIバス上のデバイスを走査し、IDE コントローラ（クラスコード `0x0101`）を探し出します。
+
+```{.d filename="source/ata.d (L93-L133)"}
+private bool inspectController(PciAddress address)
+{
+    const classInfo = address.read(8);
+    if ((classInfo >> 16) != 0x0101 || !(address.read(4) & 1)) return true;
+    const mode = cast(ubyte) (classInfo >> 8);
+    foreach (channel; 0 .. 2)
+    {
+        ushort base, control;
+        if (mode & (1 << (channel * 2)))
+        {
+            const commandBar = address.read(cast(ubyte) (0x10 + channel * 8));
+            const controlBar = address.read(cast(ubyte) (0x14 + channel * 8));
+            if (!(commandBar & 1) || !(controlBar & 1)
+                || (commandBar & ~3U) == 0 || (commandBar & ~3U) > 0xfff8
+                || (controlBar & ~3U) == 0 || (controlBar & ~3U) > 0xfffc)
+                continue;
+            base = cast(ushort) (commandBar & ~3U);
+            control = cast(ushort) ((controlBar & ~3U) + 2);
+        }
+        else
+        {
+            // PCI IDE compatibility mode uses fixed ports. Native mode obtains ports from the BARs.
+            base = cast(ushort) (channel == 0 ? 0x1f0 : 0x170);
+            control = cast(ushort) (channel == 0 ? 0x3f6 : 0x376);
+        }
+        foreach (unit; 0 .. 2)
+        {
+            Drive candidate = Drive(base, control, cast(ubyte) (0xa0 | (unit << 4)));
+            bool duplicate;
+            foreach (ref known; drives[0 .. count])
+                if (known.base == base && known.control == control && known.select == candidate.select)
+                    duplicate = true;
+            if (duplicate || !candidate.identify()) continue;
+            if (count == drives.length || count == output.length) return false;
+            drives[count] = candidate;
+            output[count] = BlockDevice(candidate.sectors, &drives[count], &readBlock, &writeBlock);
+            ++count;
+        }
+    }
+    return true;
+}
+```
+
+IDE コントローラには Primary / Secondary の 2 チャネルがあり、各チャネルに Master / Slave の 2 台（計 4 台）を接続できます。`inspectController` は PCI のプログラミングインタフェース（`mode`）を確認し、互換モードなら標準ポート `0x1f0` / `0x170`、ネイティブモードなら BAR（Base Address Register）から I/O ポートを取得して `IDENTIFY`（`0xec`）コマンドを送り、LBA 対応・512 バイトセクタ・`FLUSH CACHE` 対応を確認します。
+
+セクタの読み書きは、28 ビット LBA を使った同期 PIO 転送です。
+
+```{.d filename="source/ata.d (L135-L154)"}
+private bool readBlock(void* context, ulong lba, out Sector sector)
+{
+    auto drive = cast(Drive*) context;
+    if (!drive.transfer(lba, 0x20)) return false;
+    foreach (ref word; sector) word = readPortWord(drive.base);
+    drive.settle();
+    return drive.waitStatus(ready, dataReady);
+}
+
+private bool writeBlock(void* context, ulong lba, ref const Sector sector)
+{
+    auto drive = cast(Drive*) context;
+    if (!drive.transfer(lba, 0x30)) return false;
+    foreach (word; sector) writePortWord(drive.base, word);
+    drive.settle();
+    if (!drive.waitStatus(ready, dataReady)) return false;
+    writePort(drive.port(7), 0xe7);
+    drive.settle();
+    return drive.waitStatus(ready, dataReady);
+}
+```
+
+`writeBlock` の最後（L151）で `0xe7`（`FLUSH CACHE`）コマンドを発行している点に注目してください。`writeBlock` は、このコマンドの完了状態を確認してから成功を返します。保存の耐久性は、デバイスがフラッシュ完了を正しく報告することに依存します。これが、次に説明する DlangFS のクラッシュ耐性を支える前提条件になっています。
+
+## 2 世代ファイルシステム：DlangFS
+
+一般的なファイルシステム（FAT や ext4 など）は複雑なディレクトリ木やアロケーションテーブルを持ちますが、DlangFS は「**最大 16 個の固定スロット × 各ファイル 2 世代のコピー**」というレイアウトを採用しています。
+
+### ディスク先頭ヘッダ（LBA 0）
+
+LBA 0 には `DLANGFS1` で始まる `LayoutHeader` が格納されており、スロット数・1 ファイルの最大サイズ・チェックサムなどを厳格に検証します。
+
+```{.d filename="source/filesystem.d (L43-L51)"}
+private struct LayoutHeader
+{
+    align(1):
+    char[8] magic;
+    uint versionNumber, sectorSize, slots, fileBytes, recordsLba, sectorsPerCopy;
+    uint metadataBytes, nameBytes, checksum;
+}
+private union LayoutSector { LayoutHeader fields; Sector raw; }
+static assert(LayoutHeader.sizeof == 44 && LayoutHeader.checksum.offsetof == 40);
+```
+
+### クラッシュに強い「2 世代交互コミット」
+
+各ファイルスロットには **copy 0** と **copy 1** の 2 つの領域が用意されています。ファイルを保存するとき、現在使われている世代を上書きするのではなく、**もう一方の古い世代側に書き込みます**。
+
+```{mermaid}
+flowchart LR
+    A["1. 古い世代の本文セクタを書き込み<br/>(FLUSH CACHE 済み)"] --> B["2. FNV-1a チェックサムを計算"]
+    B --> C["3. 新しい世代番号を含むメタデータ 1 セクタを書き込み<br/>(この時点で新世代が確定)"]
+```
+
+実際のコード（`source/filesystem.d`）を見てみましょう。
+
+```{.d filename="source/filesystem.d (L258-L301)"}
+private FsResult commit(size_t slot, ref Metadata next, scope const(char)[] data)
+{
+    auto entry = &entries[slot];
+    next.sequence = entry.fields.sequence + 1;
+    if (next.sequence == 0)
+        next.sequence = 1;
+    const secondCopy = !entry.secondCopy;
+    if (!writeCopy(copyLba(slot, secondCopy), next, data))
+    {
+        mounted = false;
+        ++changes;
+        return FsResult.ioError;
+    }
+    entry.fields = next;
+    entry.secondCopy = secondCopy;
+    foreach (i, char c; data)
+        entry.payload[i] = c;
+    ++changes;
+    return FsResult.ok;
+}
+
+private bool writeCopy(uint lba, ref Metadata fields, scope const(char)[] data)
+{
+    size_t written;
+    uint sectorLba = lba;
+    while (written < data.length)
+    {
+        Sector sector = 0;
+        auto bytes = cast(char*) sector.ptr;
+        const count = sectorLength(data.length - written);
+        foreach (i; 0 .. count)
+            bytes[i] = data[written + i];
+        if (!writeSector(++sectorLba, sector))
+            return false;
+        written += count;
+    }
+
+    // The ATA driver flushes each write. Commit metadata only after all file data is written.
+    HeaderSector header = void;
+    header.raw[] = 0;
+    fields.checksum = checksum(fields, data);
+    header.fields = fields;
+    return writeSector(lba, header.raw);
+}
+```
+
+この設計は、更新先のコピーが不完全でも、残しておいた有効な世代へ戻れるようにするものです。デバイスが書き込みとフラッシュの完了を正しく報告し、旧世代が壊れていないことを前提にしています。
+
+- 本文セクタを書いている途中でクラッシュした場合：新世代のメタデータはまだ古いまま（またはチェックサム不一致）なので、次回マウント時には無傷で残っている **旧世代** が自動的に選ばれます。
+- メタデータセクタ（1 セクタ = 512 バイト）を書き終えた瞬間：すでに本文は `FLUSH CACHE` 済みで確定しているため、FNV-1a チェックサムが一致し、`isNewer` が新しいと判定する **新世代** が有効になります。世代番号は32ビットで、大小を単純比較せず、差を符号付き整数として解釈して周回を扱います。
+- ファイルの削除（`remove`）も、`name` を空にした新しい世代を同じ手順で書き込むだけで表現しています。
+
+本文を先に、メタデータを最後に書くことで、更新を確定する時点を定めています。ただし、両方のコピーの破損やチェックサム衝突まで防ぐものではありません。FNV-1aは破損検出に使っており、改ざんを防ぐ認証機構ではありません。また、この更新単位は一つのファイルであり、複数ファイルをまとめて確定するトランザクションには対応していません。
+
+次章では、このOS上のGUIデスクトップと、Ring 3で動くアプリケーションの仕組みを見ていきます。

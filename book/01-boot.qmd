@@ -1,0 +1,230 @@
+# UEFIブートとページングの立ち上げ
+
+コンピュータの電源を入れると、まずファームウェア（UEFI）がハードウェアを初期化し、ブートデバイス上の ESP（EFI System Partition）から UEFI アプリケーションを起動します。Dlang OS では `boot/loader.d` がその UEFI アプリケーションであり、カーネル（`kernel.elf`）をメモリへ読み込んでページテーブルを構築し、UEFI の管理下から抜け出してカーネルへ制御を引き渡します。
+
+```{mermaid}
+flowchart LR
+    A["UEFI ファームウェア"] --> B["efiMain (boot/loader.d)"]
+    B --> C["GOP・kernel.elf 取得"]
+    C --> D["4段階ページテーブル構築"]
+    D --> R["RTC取得・最終メモリマップ取得"]
+    R --> E["ExitBootServices"]
+    E --> F["enterKernel (CR3切替)"]
+    F --> G["kernelMain (source/kernel.d)"]
+```
+
+## ローダーの入口：`efiMain`
+
+UEFI アプリケーションのエントリポイントである `efiMain` は、`boot/loader.d` に定義されています。ここではまず 4 段階ページングと NX（No-Execute）ビットが CPU で使えるかを確認し、画面情報（GOP: Graphics Output Protocol）と `kernel.elf` を取得したあと、ページテーブルや `BootInfo` を準備して `finishBoot` へ進みます。
+
+```{.d filename="boot/loader.d (L30-L75)"}
+extern(C) Status efiMain(Handle handle, SystemTable* system) nothrow @nogc
+{
+    initSerial();
+    if (!supportsKernelPaging())
+        return fail("Four-level paging with NX is required.", unsupported);
+
+    auto services = system.bootServices;
+    LoadedImage* loaded;
+    auto status = services.handleProtocol(handle, &loadedImageGuid, cast(void**) &loaded);
+    if (status != success)
+        return fail("Cannot locate the loader image.", status);
+
+    auto display = findDisplay(services);
+    ubyte[] file;
+    status = readKernel(services, loaded.deviceHandle, file);
+    if (status != success)
+        return fail("Cannot read kernel.elf.", status);
+
+    // Release files and UEFI handles before taking the final memory map.
+    Handoff handoff;
+    status = prepareKernel(services, loaded, file, display, handoff);
+    services.freePool(file.ptr);
+    if (status != success)
+        return fail("Cannot prepare the kernel image or page tables.", status);
+
+    // Let the firmware access the RTC. Read it once before ExitBootServices.
+    Time time;
+    if (system.runtimeServices !is null && system.runtimeServices.getTime !is null
+        && system.runtimeServices.getTime(&time, null) == success)
+    {
+        const date = DateTime(time.year, time.month, time.day, time.hour, time.minute, time.second);
+        handoff.info.rtc = date;
+        handoff.info.rtcValid = validate(date);
+        handoff.info.rtcTicks = ticks();
+    }
+    bool exitAttempted;
+    status = finishBoot(services, handle, handoff, exitAttempted);
+    if (exitAttempted)
+    {
+        // The firmware may have partially shut down even if the call failed.
+        fail("Cannot exit UEFI boot services.", status);
+        haltCpu();
+    }
+    services.freePages(handoff.arenaPhysical, handoff.arenaPages);
+    return fail("Cannot obtain the UEFI memory map.", status);
+}
+```
+
+ここで注目したいのは、`ExitBootServices` を呼ぶ**前**に `system.runtimeServices.getTime` を使って RTC（リアルタイムクロック）から現在時刻を取得している点です（L56-L64）。同時に `ticks()` でその瞬間の TSC（Time Stamp Counter）を記録しておくことで、カーネル起動後は CMOS レジスタに直接触れずに経過秒数を加算できます。
+
+## 4段階ページテーブルの構築
+
+この実装は4 KiBページを使います。仮想アドレスのビット47〜39、38〜30、29〜21、20〜12を各9ビットの添字として、PML4 → PDPT → PD → PTをたどります。残る下位12ビットは、ページ内の位置を表します。
+
+`boot/boot_paging.d` の `PageTables.map` は、中間3段を `foreach (shift; [39, 30, 21])` でたどり、その後でPTの葉エントリを操作します。
+
+```{.d filename="boot/boot_paging.d (L51-L83)"}
+    /// Align both addresses to page boundaries. Leave existing entries intact.
+    bool map(ulong address, ulong physical, ulong bytes, ulong flags, bool allowIdentical = false) nothrow @nogc
+    {
+        if (root == 0)
+            return false;
+        for (ulong offset = 0; offset < bytes; offset += pageBytes)
+        {
+            auto table = cast(ulong*) root;
+            const virtualPage = address + offset;
+            foreach (shift; [39, 30, 21])
+            {
+                auto link = &table[(virtualPage >> shift) & 511];
+                if (*link == 0)
+                {
+                    const nextTable = pages.take(pageBytes);
+                    if (nextTable == 0)
+                        return false;
+                    *link = nextTable | pagePresent | pageWritable;
+                }
+                table = cast(ulong*) (*link & physicalMask);
+            }
+
+            auto leaf = &table[(virtualPage >> 12) & 511];
+            if (*leaf != 0)
+            {
+                if (allowIdentical && *leaf == ((physical + offset) | pagePresent | flags))
+                    continue;
+                return false;
+            }
+            *leaf = (physical + offset) | pagePresent | flags;
+        }
+        return true;
+    }
+```
+
+中間テーブル（PML4/PDPT/PD）が存在しない場合は `pages.take(pageBytes)` で確保した 4 KiB ページをリンクし、最後の葉エントリ（PT）に `physical + offset` と権限フラグ（`pagePresent | flags`）を書き込みます。
+
+## `BootInfo` と物理メモリのダイレクトマップ
+
+ローダーからカーネルへ引き渡す情報は `source/boot_info.d` の `BootInfo` 構造体にまとめられています。
+
+```{.d filename="source/boot_info.d (L6-L32)"}
+// Map physical pages allocated at boot into the higher half, at the same addresses in every user process.
+enum ulong directMapOffset = 0xffff_8000_0000_0000;
+enum ulong bootPhysicalLimit = 32UL << 40;
+
+struct BootFramebuffer
+{
+    uint* address;
+    uint width, height, pitchBytes;
+    ubyte redShift, greenShift, blueShift;
+}
+
+struct MemoryRange
+{
+    ulong physical, pages;
+}
+
+struct BootInfo
+{
+    BootFramebuffer framebuffer;
+    uint* backBuffer;
+    DateTime rtc;
+    bool rtcValid;
+    ulong rtcTicks;
+    ulong usableKiB;
+    size_t rangeCount;
+    MemoryRange[128] ranges; // The loader refuses to boot if the range count exceeds this capacity.
+}
+```
+
+Dlang OSは、ブート時に確保した領域や、メモリ管理に使う空きRAMを、上位アドレス空間へ**ダイレクトマップ**します。登録済みの物理アドレス `P` には、`directMapOffset + P` でアクセスできます。`directMapOffset` は `0xffff_8000_0000_0000` です。任意の物理アドレスが使えるわけではなく、登録していない領域やMMIOは別に扱います。
+
+## `ExitBootServices` とカーネルへのジャンプ
+
+`boot/loader.d` の `finishBoot` では、UEFI から最新のメモリマップを取得し、`conventionalMemory` として報告された空きRAMをダイレクトマップへ登録してから、`exitBootServices` を呼び出します。物理アドレス0のページは除外し、32 TiB未満という物理アドレスの上限や、最大128領域という制約を満たさない場合は起動を中止します。
+
+```{.d filename="boot/loader.d (L300-L331)"}
+        handoff.info.rangeCount = 0;
+        auto tables = PageTables(handoff.root, handoff.remaining);
+        const entries = cast(const(ubyte)*) map;
+        for (size_t offset = 0; offset < required; offset += descriptorBytes)
+        {
+            const descriptor = cast(const(MemoryDescriptor)*) (entries + offset);
+            if (descriptor.type == conventionalMemory && descriptor.pageCount != 0)
+            {
+                const base = descriptor.physicalStart == 0 ? pageBytes : descriptor.physicalStart;
+                const count = descriptor.pageCount - (descriptor.physicalStart == 0 ? 1 : 0);
+                if (count == 0)
+                    continue;
+                if (base >= bootPhysicalLimit || count > (bootPhysicalLimit - base) / pageBytes
+                    || handoff.info.rangeCount == handoff.info.ranges.length)
+                    return loadError;
+                if (!tables.map(directMapOffset + base, base, count * pageBytes,
+                                pageWritable | pageNoExecute, true))
+                    return loadError;
+                handoff.info.ranges[handoff.info.rangeCount++] = MemoryRange(base, count);
+                usableKiB += count * (pageBytes / 1024);
+            }
+        }
+        handoff.info.usableKiB = usableKiB;
+
+        exitAttempted = true;
+        status = services.exitBootServices(handle, key);
+        if (status == success)
+        {
+            enterKernel(handoff.root, handoff.stackTop, handoff.entry,
+                directMapOffset + cast(ulong) handoff.info);
+            haltCpu();
+        }
+```
+
+`exitBootServices` には、取得したメモリマップのキーを渡します。キーが無効として拒否された場合、`finishBoot` はマップ取得からやり直します。試行回数は最大8回です。成功後はUEFIのブートサービスを使わず、カーネルへ移ります。最後に呼ばれるのが `boot/boot_paging.d` の `enterKernel` です。
+
+```{.d filename="boot/boot_paging.d (L100-L127)"}
+// RCX = CR3, RDX = stack top, R8 = ELF entry, R9 = BootInfo. After switching CR3,
+// enter the kernel with the first SysV argument in RDI and avoid using the firmware stack.
+extern(C) void enterKernel(ulong, ulong, ulong, ulong) nothrow @nogc
+{
+    asm pure nothrow @nogc {
+        naked;
+        cli;
+        cld;
+        mov R10, RCX;
+        mov R11, RDX;
+        mov ECX, 0xc0000080; // EFER.NXE
+        rdmsr;
+        or EAX, 0x800;
+        wrmsr;
+        mov RAX, CR0;
+        or RAX, 0x10000; // CR0.WP
+        mov CR0, RAX;
+        mov RAX, CR4;
+        and RAX, -129; // Clear PGE to discard the firmware's global TLB entries.
+        mov CR4, RAX;
+        mov CR3, R10;
+        mov RSP, R11;
+        xor EBP, EBP;
+        mov RDI, R9;
+        call R8;
+        ud2;
+    }
+}
+```
+
+UEFI の呼び出し規約（Microsoft x64 ABI：引数は `RCX, RDX, R8, R9`）で渡された値を受け取り、次の手順でカーネルへ移行しています。
+
+1. `EFER.NXE`（ビット 11）を有効化し、データページの実行禁止（NX）を機能させる。
+2. `CR0.WP`（ビット 16）を有効化し、Ring 0 であっても読み取り専用ページへの書き込みを禁止する。
+3. `CR4.PGE` をクリアしてファームウェアのグローバル TLB エントリを破棄し、`CR3` に新しいページテーブルをセットする。
+4. `RSP` をカーネル用スタックへ切り替え、System V AMD64 ABI の第1引数 `RDI` に `BootInfo*` を入れてカーネルのエントリ `R8` を呼び出す。
+
+次章では、制御を受け取ったカーネルの初期化を見ていきます。

@@ -1,0 +1,208 @@
+# 特権レベル遷移・割り込み・APICタイマー
+
+OS が安全に複数のアプリケーションを動かすためには、カーネル（**Ring 0**）とユーザープログラム（**Ring 3**）の権限を分離し、ユーザープログラムが暴走してもシステム全体が壊れないようにする必要があります。また、無限ループするユーザープログラムから CPU を強制的に取り戻す（**プリエンプション**）ためのタイマー割り込みも欠かせません。
+
+本章では、`source/privilege.d` と `source/apic_timer.d` を読み解きながら、x86-64 における Ring 0 ↔ Ring 3 の往復と割り込み処理の仕組みを学びます。
+
+```{mermaid}
+sequenceDiagram
+    participant K as カーネル (Ring 0)
+    participant CPU as CPU / ハードウェア
+    participant U as ユーザープロセス (Ring 3)
+    K->>CPU: arm() で約 5 ms タイマーセット
+    K->>U: enterUser(&frame, userCr3, kernelCr3) → iretq
+    Note over U: ユーザーコード実行中...
+    U->>CPU: INT 0x80 (システムコール) または タイマー割り込み (0x40)
+    CPU->>K: TSS.RSP0 へ切替 & trap!vector → processTrap
+    K->>K: UserFrame へレジスタ保存、kernelCr3/RSP 復元
+    Note over K: enterUser の直後に retq で戻る
+```
+
+## レジスタ状態の入れ物：`UserFrame`
+
+ユーザープロセスを中断してカーネルへ戻り、あとでまた同じ場所から再開するには、CPU の汎用レジスタと `RIP`・`RSP`・`RFLAGS`・セグメントセレクタを丸ごと保存しておく必要があります。`source/privilege.d` ではこれを `UserFrame` 構造体として定義しています。
+
+```{.d filename="source/privilege.d (L15-L24)"}
+// Match register order to enterUser and processTrap push/pop sequences and the CPU return frame.
+struct UserFrame
+{
+    ulong r15, r14, r13, r12, r11, r10, r9, r8;
+    ulong rdi, rsi, rbp, rbx, rdx, rcx, rax;
+    ulong vector, error, rip, cs, flags, rsp, ss;
+}
+
+static assert(UserFrame.sizeof == 22 * ulong.sizeof);
+static assert(UserFrame.cs.offsetof == 144);
+```
+
+末尾の 5 フィールド（`rip, cs, flags, rsp, ss`）は、x86-64 の CPU が割り込み発生時に自動でスタックに積み、`iretq` 命令で自動で取り出す「割り込みスタックフレーム」のレイアウトと完全に一致させてあります。
+
+## GDT・TSS・IDT の構築
+
+`initPrivilege()` では、Ring 0 と Ring 3 のセグメント記述子（GDT）、割り込み時に Ring 3 スタックからカーネルスタックへ切り替えるための **TSS（Task State Segment）**、および割り込みハンドラ表（IDT）を設定します。
+
+```{.d filename="source/privilege.d (L71-L93)"}
+    gdt[1] = 0x00af9a000000ffff; // Ring 0, 64-bit code.
+    gdt[2] = 0x00cf92000000ffff; // Ring 0, data.
+    gdt[3] = 0x00cff2000000ffff; // Ring 3, data.
+    gdt[4] = 0x00affa000000ffff; // Ring 3, 64-bit code.
+    const tssAddress = cast(ulong) tss.ptr;
+    gdt[5] = cast(ulong) (tss.length - 1) | ((tssAddress & 0xffffff) << 16)
+        | (0x89UL << 40) | ((tssAddress & 0xff000000) << 32);
+    gdt[6] = tssAddress >> 32;
+    *cast(ulong*) (tss.ptr + 4) = cast(ulong) (trapStack.ptr + trapStack.length); // RSP0
+    *cast(ushort*) (tss.ptr + 102) = cast(ushort) tss.length; // No I/O permission bitmap.
+
+    const gdtr = TablePointer(cast(ushort) (gdt.sizeof - 1), cast(ulong) gdt.ptr);
+    loadGdt(&gdtr);
+
+    static foreach (vector; 0 .. 32)
+        setGate(vector, &trap!vector);
+    setGate(0x24, &serialInterruptEntry);
+    setGate(0x27, &ignoreSpurious); // A spurious PIC IRQ7 needs no EOI.
+    setGate(timerVector, &trap!timerVector);
+    setGate(syscallVector, &trap!syscallVector, 0xee); // Entry callable through INT from Ring 3.
+    setGate(spuriousVector, &ignoreSpurious);
+    const idtr = TablePointer(cast(ushort) (idt.sizeof - 1), cast(ulong) idt.ptr);
+    __asm("lidtq ($0)", "r,~{memory}", &idtr);
+```
+
+スタックの切り替え先と、システムコール入口の権限を確認します。
+
+1. **TSS の `RSP0`（L79）**: Ring 3 実行中に割り込みや `INT 0x80` が起きると、CPU は TSS のオフセット 4 にある `RSP0`（`trapStack` の末尾）にスタックを切り替えてからレジスタを積みます。これにより、ユーザースタックが壊れていても安全にカーネルへ入れます。
+2. **ゲート属性 `0xee`（L90）**: 通常の割り込みゲートは `0x8e`（DPL=0）ですが、システムコール入口の `syscallVector`（`0x80`）だけは Ring 3 から `int $0x80` で呼べるように DPL=3 を意味する `0xee` を設定しています。
+
+## Ring 3 への突入と帰還：`enterUser` と `processTrap`
+
+`enterUser` がカーネルのコンテキストをスタックに退避して `iretq` でユーザー空間へ飛び、ユーザー空間からトラップ（システムコール・タイマー・例外）で戻ってきた `processTrap` が、保存したカーネルスタックを復元して `retq` することで、**あたかも `enterUser` が普通の関数呼び出しから戻ってきたかのように** スケジューラ（`runNext`）の続きへ帰還します。
+
+```{.d filename="source/privilege.d (L129-L163)"}
+/// System V ABI. Save the scheduler stack and restore user state, including RIP and RSP.
+extern(C) void enterUser(UserFrame*, ulong, ulong)
+{
+    asm @nogc nothrow { naked; }
+    __asm(q{
+        pushq %rbp
+        pushq %rbx
+        pushq %r12
+        pushq %r13
+        pushq %r14
+        pushq %r15
+        movq %rsp, resumeKernelStack(%rip)
+        movq %rdx, resumeKernelCr3(%rip)
+        movq %rdi, runningFrame(%rip)
+        movq %rsi, %cr3
+        movq %rdi, %rsp
+        popq %r15
+        popq %r14
+        popq %r13
+        popq %r12
+        popq %r11
+        popq %r10
+        popq %r9
+        popq %r8
+        popq %rdi
+        popq %rsi
+        popq %rbp
+        popq %rbx
+        popq %rdx
+        popq %rcx
+        popq %rax
+        addq $$16, %rsp
+        iretq
+    }, "~{memory}");
+}
+```
+
+`enterUser` はまず System V ABI の callee-saved レジスタ（`rbp, rbx, r12..r15`）をカーネルスタックへ積み、`resumeKernelStack` と `resumeKernelCr3` にカーネル側の状態を記録します。続いて `CR3` をユーザープロセスのページテーブル（`%rsi`）へ切り替え、`%rsp` を `UserFrame*`（`%rdi`）に向けてRSP以外の15個の汎用レジスタを `pop` し、`vector` と `error` の 16 バイトを読み飛ばして `iretq` を実行します。
+
+ユーザー空間でCPU例外、APICタイマー割り込み、`INT 0x80` が発生すると、対応する `trap!vector` から `processTrap` へ進みます。シリアル受信割り込みは専用ハンドラを使い、通常は中断されたコードへ直接戻ります。
+
+```{.d filename="source/privilege.d (L192-L233)"}
+extern(C) private void processTrap()
+{
+    asm @nogc nothrow { naked; }
+    __asm(q{
+        pushq %rax
+        pushq %rcx
+        pushq %rdx
+        pushq %rbx
+        pushq %rbp
+        pushq %rsi
+        pushq %rdi
+        pushq %r8
+        pushq %r9
+        pushq %r10
+        pushq %r11
+        pushq %r12
+        pushq %r13
+        pushq %r14
+        pushq %r15
+        cld
+        testb $$3, 144(%rsp)
+        jz 1f
+        movq runningFrame(%rip), %rdi
+        movq %rsp, %rsi
+        movl $$22, %ecx
+        rep movsq
+        movq resumeKernelCr3(%rip), %rax
+        movq %rax, %cr3
+        movq resumeKernelStack(%rip), %rsp
+        popq %r15
+        popq %r14
+        popq %r13
+        popq %r12
+        popq %rbx
+        popq %rbp
+        retq
+    1:
+        cli
+        hlt
+        jmp 1b
+    }, "~{memory}");
+}
+```
+
+`processTrap` はRSP以外の15個の汎用レジスタを積みます。RSPはCPUが保存したフレームに含まれます。続く `testb $$3, 144(%rsp)` は、保存されたCSの下位2ビット（RPL）が0かどうかを調べます。0ならカーネル内から来たものとして停止し、0以外なら保存処理へ進みます。このOSはRing 0とRing 3を使うため、後者をユーザーからの復帰として扱っています。
+
+続いて `rep movsq` で 22 個の `ulong` をそのまま `runningFrame` へコピーし、`resumeKernelCr3` と `resumeKernelStack` を復元して `retq` します。
+
+## ローカル APIC タイマーによるプリエンプション
+
+ユーザープロセスが `INT 0x80` を呼ばずに無限ループしても、OS が固まらないようにするのが **ローカル APIC タイマー**（`source/apic_timer.d`）です。
+
+`initTimer()` では、第2章で校正済みの `milliseconds()` を使って 20 ms 間に APIC カウンタがどれだけ減るかを測り、その 1/4 を `quantumTicks`（約 **5 ms** のタイムスライス）として記憶します。
+
+```{.d filename="source/apic_timer.d (L44-L68)"}
+    writeRegister(divideConfig, 0x03); // Divide the APIC base clock by 16.
+    writeRegister(initialCount, uint.max);
+    const started = milliseconds();
+    while (milliseconds() - started < 20) {}
+    const elapsed = uint.max - readRegister(0x390);
+    writeRegister(initialCount, 0);
+    quantumTicks = elapsed / 4; // 5 ms time slice.
+    if (quantumTicks == 0 || elapsed == uint.max)
+        return false;
+    writeRegister(timerConfig, timerVector);
+    available = true;
+    return true;
+}
+
+void arm()
+{
+    writeRegister(initialCount, quantumTicks);
+}
+
+void cancel(bool timerDelivered)
+{
+    writeRegister(initialCount, 0);
+    if (timerDelivered)
+        writeRegister(endOfInterrupt, 0);
+}
+```
+
+スケジューラは `enterUser` を呼ぶ直前に `arm()` で約5 msのワンショットタイマーを仕掛け、戻ってきたら `cancel(timerFired)` でタイマーを停止します。もしタイムスライスを使い切ってタイマー割り込み（`timerVector = 0x40`）で戻った場合は、`endOfInterrupt` レジスタへ `0` を書き込んで APIC に割り込み完了（EOI）を通知します。
+
+また、カーネルがアイドル状態のときは `idle()` が約 1 ms のタイマーをセットし、`waitForInterrupt()` の `sti; hlt; cli` で CPU を眠らせます。シリアル受信割り込み（IRQ4）または 1 ms タイマーが来ると即座に目を覚まし、イベントループを再開します。
+
+次章では、この仕組みの上で実際に ELF バイナリを読み込み、複数プロセスをスケジューリングする `elf.d` と `process.d` を見ていきます。

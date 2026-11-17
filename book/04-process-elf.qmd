@@ -1,0 +1,207 @@
+# プロセス管理・ELFローダー・システムコール
+
+第3章で Ring 0 と Ring 3 を安全に往復する仕組みが整いました。本章では、ディスク上の ELF64 実行ファイルを検証してメモリに配置する `source/elf.d` と、最大 15 個のプロセスをラウンドロビンでスケジューリングし、`INT 0x80` システムコールをさばく `source/process.d` を読み解きます。
+
+## 静的な ELF64 ローダー：`loadElf`
+
+Dlang OS が読み込めるユーザープログラムは、静的にリンクされた x86-64・リトルエンディアンの ELF64 `ET_EXEC` バイナリです。`source/elf.d` の `loadElf` は、ELF ヘッダとプログラムヘッダを厳密に検証した上で、各 `PT_LOAD` セグメントを仮想空間（`0x00400000` 以上、`tlsAddress` 未満）にマップします。`tlsAddress` は `0x0ffe0000` で、ヒープ開始位置 `0x10000000` の手前128 KiBをTLS用に予約しています。
+
+```{.d filename="source/elf.d (L20-L78)"}
+bool loadElf(ref AddressSpace space, scope const(char)[] image, out ulong entry) nothrow @nogc
+{
+    if (image.length < expectedElfHeaderSize || little(image, 0, 4) != 0x464c457f
+        || image[4] != 2 || image[5] != 1 || image[6] != 1
+        || little(image, 16, 2) != 2 || little(image, 18, 2) != 62 || little(image, 20, 4) != 1
+        || little(image, 52, 2) != expectedElfHeaderSize
+        || little(image, 54, 2) != expectedProgramHeaderSize)
+        return false;
+
+    const pc = little(image, 24, 8);
+    const programHeaders = little(image, 32, 8);
+    const count = little(image, 56, 2);
+    if (count == 0 || count > 32 || programHeaders < expectedElfHeaderSize
+        || !contains(image.length, programHeaders, count * expectedProgramHeaderSize))
+        return false;
+
+    bool entryIsExecutable;
+    ulong tlsHeader;
+    foreach (i; 0 .. count)
+    {
+        const header = programHeaders + i * expectedProgramHeaderSize;
+        const kind = little(image, header, 4);
+        const flags = little(image, header + 4, 4);
+        if (kind == tlsSegment)
+        {
+            if (tlsHeader != 0) return false;
+            tlsHeader = header;
+            continue;
+        }
+        if (kind == dynamicSegment || kind == interpreterSegment
+            || (kind == stackSegment && (flags & flagExecute)))
+            return false;
+        if (kind != loadSegment)
+            continue;
+
+        const offset = little(image, header + 8, 8);
+        const address = little(image, header + 16, 8);
+        const filesz = little(image, header + 32, 8);
+        const memsz = little(image, header + 40, 8);
+        const alignment = little(image, header + 48, 8);
+        if (flags & ~7UL || !(flags & flagRead) || (flags & 3) == 3
+            || alignment != pageBytes || offset % pageBytes != 0
+            || filesz > memsz || !contains(image.length, offset, filesz)
+            || address < userCodeAddress || address >= tlsAddress || memsz > tlsAddress - address)
+            return false;
+
+        const execute = (flags & flagExecute) != 0;
+        if (!mapImage(space, address, memsz, image[offset .. offset + filesz], (flags & flagWrite) != 0, execute))
+            return false;
+        if (execute && pc >= address && pc - address < filesz)
+            entryIsExecutable = true;
+    }
+    if (!entryIsExecutable)
+        return false;
+    if (tlsHeader && !initializeTls(space, image, tlsHeader))
+        return false;
+    entry = pc;
+    return true;
+}
+```
+
+`loadElf` には、OS の安全性を保つためのチェックがいくつも組み込まれています。
+
+- **書き込みと実行の同時許可を拒否（W^X）**: `(flags & 3) == 3`（L60）で書き込み可能（W）かつ実行可能（X）なセグメントを拒否しています。さらに `PT_GNU_STACK`（`stackSegment`）に実行権限がついている場合も拒否します（L50）。
+- **動的リンクの禁止**: `PT_DYNAMIC` や `PT_INTERP` があると拒否します（L49）。
+- **エントリポイントの検証**: `entryIsExecutable`（L69, L72）により、エントリポイント `pc` が実行権限のある `PT_LOAD` のファイル由来の範囲（`filesz`）内にあることを確認します。メモリ上にだけ存在するゼロ初期化部分は入口として認めません。
+- **TLS（Thread Local Storage）の初期化**: 標準 `druntime` を使う静的 ELF 向けに `PT_TLS` にも対応しており、`initializeTls` が初期値をプロセス専用領域へコピーし、後で `FS:0` として参照される位置に自己ポインタを置きます。FSベース自体は、プロセスの実行直前に設定します。
+
+## プロセスの生成：`spawnElf`
+
+`source/process.d` の `spawnElf` は、空いているプロセススロットを探して独立したアドレス空間（`AddressSpace`）を初期化し、`loadElf` と初期ヒープ（`0x10000000` から 64 KiB）のマップを行ったあと、タスクを有効化します。
+
+```{.d filename="source/process.d (L94-L116)"}
+ElfStart spawnElf(scope const(char)[] name, scope const(char)[] image, out uint pid)
+{
+    const slot = freeSlot();
+    if (slot == processLimit)
+        return ElfStart.unavailable;
+    bool started;
+    scope(exit) if (!started) releaseUserSpace(spaces[slot]);
+    if (!initUserSpace(spaces[slot]))
+        return ElfStart.unavailable;
+    ulong entry;
+    if (!loadElf(spaces[slot], image, entry))
+        return ElfStart.invalid;
+    if (!mapUserHeap(spaces[slot]))
+        return ElfStart.unavailable;
+
+    started = true;
+    auto task = activate(slot, Program.elf, entry);
+    foreach (i, char c; name)
+        task.info.filename[i] = c;
+    task.info.filenameLength = name.length;
+    pid = task.info.pid;
+    return ElfStart.ok;
+}
+```
+
+ここで D 言語の `scope(exit)` が効いています。`initUserSpace` のあとに `loadElf` や `mapUserHeap` が途中で失敗しても、`started` が `false` のまま関数を抜けるため、`releaseUserSpace` が確実に呼ばれて物理ページのリークを防ぎます。
+
+## ラウンドロビンスケジューラ：`runNext`
+
+`runNext` は `turn` インデックスを 1 つずつ進めながら、実行可能なプロセスを一つ選び、約5 msのタイマーを設定して実行します。システムコールや例外があれば、それより早く戻ります。校正や割り込み処理の遅延を含むため、厳密な実行時間の上限を保証するものではありません。
+
+```{.d filename="source/process.d (L228-L282)"}
+bool runNext()
+{
+    if (!available)
+        return false;
+
+    foreach (_; 0 .. processLimit)
+    {
+        const slot = turn;
+        turn = (turn + 1) % processLimit;
+        auto task = &processes[slot];
+        if (task.info.pid == 0)
+            continue;
+
+        if (task.closeDeadline != 0 && milliseconds() >= task.closeDeadline)
+        {
+            releaseUserSpace(spaces[slot]);
+            task.info.pid = 0;
+            continue;
+        }
+        if (task.waiting != WaitKind.none)
+        {
+            if (milliseconds() < task.wakeDeadline
+                && (task.waiting != WaitKind.gui || !guiInputReady(task.info.pid)))
+                continue;
+            if (task.waiting == WaitKind.gui)
+                task.frame.rax = guiCall(task.info.pid, Call.guiPoll, spaces[slot], task.frame.rdi, 0);
+            task.waiting = WaitKind.none;
+        }
+        ++task.info.slices;
+        arm();
+        writeMsr(0xc0000100, spaces[slot].threadPointer); // IA32_FS_BASE, per-process main thread.
+        enterUser(&task.frame, spaces[slot].cr3, kernelCr3);
+        writeMsr(0xc0000100, 0); // The BetterC kernel has no TLS.
+        const timerFired = task.frame.vector == timerVector;
+        cancel(timerFired);
+        if (!validResume(task.frame))
+        {
+            ++faultedCount;
+            task.info.pid = 0;
+        }
+        else if (timerFired)
+            ++task.info.preemptions;
+        else if (task.frame.vector == syscallVector)
+            handleCall(*task, spaces[slot]);
+        else
+        {
+            ++faultedCount;
+            task.info.pid = 0;
+        }
+        if (task.info.pid == 0)
+            releaseUserSpace(spaces[slot]);
+        return true;
+    }
+    return false;
+}
+```
+
+待機中の判定、TLSの切り替え、復帰理由の処理を順に確認します。
+
+1. **ブロッキング待機（L247-L255）**: `sleep` は期限まで、`guiWait` は期限または入力・状態変更が届くまで、`enterUser` を呼ばずにスキップします。GUI入力による起床は `guiWait` の場合だけです。
+2. **TLS ベースレジスタの切り替え（L258-L260）**: ユーザー実行時だけ `IA32_FS_BASE`（MSR `0xc0000100`）にそのプロセスの `threadPointer` を設定し、カーネルに戻ったら `0` に戻しています。
+3. **終了理由の分岐（L261-L276）**:
+   - `timerVector`（`0x40`）で戻ったらプリエンプト回数を増やす。
+   - `syscallVector`（`0x80`）で戻ったら `handleCall` でシステムコールを処理する。
+   - それ以外（ページフォルトや一般保護例外など）や `validResume` 違反なら、異常終了としてカウントし、直後に `releaseUserSpace` でプロセスが所有するページとページテーブルを回収する。共有しているカーネル領域や組み込みコードのページは解放しない。
+
+## ユーザー空間からのシステムコール呼び出し
+
+ユーザーアプリ側の `apps/user_api.d` は、Dlang OS独自のシステムコールABIを使います。`RAX` に番号、`RDI` と `RSI` に第1・第2引数を入れて `int $0x80` を実行し、戻り値を `RAX` で受け取ります。通常の関数呼び出しの規約とは区別してください。
+
+```{.d filename="apps/user_api.d (L7-L23)"}
+ulong call(Call number, ulong first = 0, ulong second = 0) nothrow @nogc
+{
+    return __asm!ulong("int $$0x80", "={rax},0,{rdi},{rsi},~{memory}",
+        cast(ulong) number, first, second);
+}
+
+ulong send(Call number, scope const(char)[] text) nothrow @nogc
+{
+    return call(number, cast(ulong) text.ptr, text.length);
+}
+
+noreturn exitApp() nothrow @nogc
+{
+    call(Call.exit);
+    while (true)
+        call(Call.yield);
+}
+```
+
+カーネル側の `handleCall`（`source/process.d` L294-L340）では、`Call.yield` / `Call.publish` / `Call.exit` / `Call.write` / `Call.sleep` / `Call.heapResize` に加えて、`Call.guiCreate` や `Call.guiWait`、`Call.guiPresent` などの GUI・ファイルシステム用システムコールを処理しています。`userWrite` や `openWindow` は、`readText` を介して `copyFromUser` でユーザーページからデータを読みます。ユーザー空間へ結果を書き戻す処理には `copyToUser` を使います。どちらも対象範囲を検査し、書き戻す場合は書き込み権限も確認します。
+
+次章では、永続ストレージを扱う PCI/ATA ドライバと、2 世代コピー方式のファイルシステム **DlangFS** を扱います。

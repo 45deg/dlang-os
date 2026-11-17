@@ -1,0 +1,75 @@
+# Dランタイムを載せて Hello, world を動かす
+
+ここまでのカーネルとGUIアプリは、主に `-betterC` でビルドしています。一方、`apps/experiments/phobos_hello.d` は `std.stdio.writeln` を呼び出す通常のDプログラムです。同じカーネル上で動くこの二つの違いを、起動処理と出力の経路から追います。
+
+## カーネルとランタイムの役割を分ける
+
+カーネルがELFをロードできても、それだけでDの標準ライブラリを使えるわけではありません。アプリのモジュール初期化、TLS、メモリ割り当て、標準出力などを支えるユーザー空間の実装が必要です。
+
+| 層 | このリポジトリでの役割 | 読む場所 |
+| --- | --- | --- |
+| カーネル | ページの割り当て、プロセス切り替え、シリアルへの出力 | `source/process.d`、`source/address_space.d` |
+| OS依存アダプター | C ABI、ヒープ管理、システムコールへの接続 | `runtime/druntime/port/dlangos/` |
+| druntime | Dモジュールの登録、初期化と終了処理 | `runtime/druntime/patches/0001-dlangos-startup.patch` |
+| Phobos | `writeln` などの標準ライブラリ | `runtime/phobos/patches/`、`tools/phobos.py` |
+
+標準druntimeの移植は、`apps/runtime/` にある独自の最小ランタイムとは別のビルドです。また、通常の `make` や `make apps` に標準druntimeとPhobosの取得・ビルドは含まれません。
+
+## ELFの入口からDの `main` へ
+
+BetterC版のアプリは `appMain` から直接処理を始めます。標準druntime版では、同名の入口を `runtime/druntime/port/dlangos/entry.d` が提供します。その処理順序は次のとおりです。
+
+1. リンカがまとめた `.init_array` の関数を呼び、モジュールを登録する。
+2. 上流の `_d_run_main` に制御を渡す。
+3. ランタイムが依存順序に従って共有コンストラクタとTLSコンストラクタを実行し、Dの `main` を呼ぶ。
+4. 通常終了ではTLSデストラクタ、共有デストラクタをそれぞれ逆依存順で実行し、プロセスを終了する。
+
+現在の起動処理は引数を空配列として渡します。`kill` やCPUフォルトによる強制終了ではこの通常終了経路を通らず、デストラクタは実行されません。ファイル保存など、完了を確認する必要がある処理を終了時のデストラクタだけに任せることはできません。
+
+## TLSはプロセスを切り替えても混ざらない
+
+TLS（Thread Local Storage）は、スレッドごとに別の値を持つ変数のための領域です。この移植では1プロセスに主スレッドが一つだけあり、ELFの `PT_TLS` をもとに初期値をコピーし、ゼロ初期化部分を埋めます。
+
+第4章の `runNext` はユーザーコードを実行する直前に `IA32_FS_BASE` を設定します。ランタイム側の `dlangos.tls.mainTlsRange` は `FS:0` の自己ポインタからTLS領域を求めます。この二つが対応することで、タイマーがプロセスを切り替えても、それぞれのTLS変数や `errno` が保たれます。
+
+ここで必要なのは、初回ロード時のメモリ確保と、毎回の実行再開時のレジスタ設定の両方です。初期化だけが正しくても、切り替え時に別プロセスのFSベースを使えば隔離は成立しません。`tests/druntime_qemu.py` は異なるTLS値を持つ二つのプロセスを同時実行し、この経路を検証します。
+
+## `writeln` からシリアル出力まで
+
+次は `apps/experiments/phobos_hello.d` の本文です。
+
+```{.d filename="apps/experiments/phobos_hello.d (L2-L8)"}
+module phobos_hello;
+import std.stdio : writeln;
+
+void main()
+{
+    writeln("Hello, world!");
+}
+```
+
+出力は、上流Phobosの `writeln`、`File.LockingTextWriter`、C入出力アダプター、`Call.write` の順に渡されます。`runtime/druntime/port/dlangos/libc.d` では、例えば `fwrite` がバイト列を分割してシステムコールへ送ります。カーネルはユーザーアドレスを検査し、印字可能ASCII、LF、`0x80` 以上のバイトをシリアルへ出力します。LFはCRLFへ変換し、UTF-8の妥当性は検証しません。
+
+この構造では、画面に文字が出ることだけでなく、下位層の失敗が上位層へ伝わることも必要です。`tests/phobos_qemu.py` は正常な出力に加え、カーネルが拒否する制御文字と閉じたストリームへの出力を使い、例外を捕捉できることを確認します。
+
+## ビルドして確かめる
+
+リポジトリのルートで `./configure` を済ませてから実行します。標準起動処理のビルドにはClangも必要です。
+
+```sh
+make druntime-fetch
+make phobos-fetch
+make test-phobos
+```
+
+取得ターゲットは、ロックファイルで固定した上流ソースをダウンロードしてハッシュを確認します。テストは使い捨てディスクへELFを保存し、再起動後に通常のローダーから実行します。ビルドだけなら `make phobos-output`、C ABI・TLS・モジュール初期化を個別に確かめるなら `make test-druntime` を使います。
+
+生成された `build/phobos/output/` にはELF、リンクマップ、`report.json` があります。リンクマップから取り込まれたシンボルを、レポートからビルドコマンドを追うと、短い `main` の裏で何が必要になったかを調べられます。
+
+## 動いた機能と未対応の機能を区別する
+
+この移植で `writeln` が動いても、Phobos全体が利用できるわけではありません。標準入力、一般的なファイル入出力、追加スレッド、同期用モニター、浮動小数点・SIMDなどは未対応です。
+
+Phobos用の `dlangos.gc` は割り当てを追跡しますが、到達不能なオブジェクトを走査して回収するGCではありません。D側の割り当てはプロセス終了まで保持されるので、割り当てを繰り返す長寿命アプリはヒープ上限に達し得ます。一方、C側の `malloc` / `free` は解放領域を再利用します。
+
+次に機能を追加するときは、必要なシンボル、OSへの依存、失敗時の動作を調べ、対応する実行テストを用意します。移植範囲と取得手順の詳細はリポジトリの `docs/druntime.md` と `docs/phobos.md` にあります。

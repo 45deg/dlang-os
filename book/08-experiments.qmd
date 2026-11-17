@@ -1,0 +1,178 @@
+# 実習：観測結果から実装を確かめる
+
+本章では、既存のシェルと検証アプリを使い、プリエンプション、障害の隔離、ファイルの永続化を観測します。数値を予想してから実行し、その結果を前の章のコードへ結び付けてください。
+
+## 実習用ディスクで起動する
+
+`make`、`./configure`、`wc`、`xxd` はホストの端末で実行します。`mem`、`spawn`、`ps`、`write`、`put`、`cat`、`run` などは、起動後のゲストの `dlang>` で入力します。ホスト側はリポジトリのルートで作業します。
+
+```sh
+./configure
+make run DATA_DISK=build/tutorial-data.img
+```
+
+`config.mk` がすでにあれば `./configure` は省略できます。指定したディスクがなければ、Makefileが新規作成してGUIアプリを配置します。すでにあれば内容を引き継ぎます。実習で作るファイル名が既存のものと重なる場合は、別の名前を使ってください。
+
+QEMUを終了するには起動した端末で `Ctrl+C` を押します。再開時にも同じ `DATA_DISK` を指定してください。ゲストの `halt` はCPUを停止するコマンドで、QEMU自体を終了する操作とは異なります。
+
+## 実習1：CPUを譲らないプロセスを観測する
+
+GUIアプリを起動していない状態で、まず `mem` の `Free pages` を記録します。名前はページ数のように見えますが、表示単位は **KiB** です。
+
+```text
+mem
+spawn spin
+spawn counter
+ps
+```
+
+少し待って `ps` をもう一度実行します。表示の列は `PID PROGRAM VALUE SLICES PREEMPTIONS` です。PIDは実際に表示された値を使い、固定値を前提にしないでください。
+
+| 観測対象 | 期待する変化 | 対応する実装 |
+| --- | --- | --- |
+| `spin` の `PREEMPTIONS` | 時間を置くと増える | APICタイマーと `process.runNext` |
+| `counter` の `VALUE` | 実行を続けると増える | `source/user_program.d` の `Call.publish` |
+| シェルの応答 | `spin` 実行中も `ps` に応答する | カーネルのメインループへ制御が戻る |
+
+`spin` は自分からシステムコールを発行しません。それでも `PREEMPTIONS` が増えることが、タイマーによってCPUを取り戻した証拠になります。`SLICES` はスケジューラが実行した回数なので、それだけでは自発的なシステムコールとタイマー割り込みを区別できません。
+
+ここでの `spawn counter` は診断用の組み込みプログラムです。第6章のGUIアプリ `counter.elf` とは別の実装で、ウィンドウは開きません。
+
+## 実習2：フォルトの影響とページ回収を調べる
+
+実習1のプロセスを残したまま、`ps` の `Faulted` を記録してから実行します。
+
+```text
+spawn fault
+ps
+mem
+```
+
+`fault` は読み取り専用のコードページ末尾へ書き込みます。期待する結果は、`Faulted` が一つ増え、`fault` は実行中一覧に残らず、既存の `spin` と `counter` が動き続けることです。単に「シェルが落ちなかった」だけでなく、他のプロセスの値も確認します。コマンドを続けて貼り付けた直後は `fault` がまだ実行されていない場合があるため、少し待って `ps` を再実行してください。
+
+続いて `kill PID` を、`spin` と `counter` それぞれの実際のPIDで実行し、`mem` を確認します。他のアプリを起動していなければ、`Free pages` は実習1の開始前へ戻ることが期待されます。起動時の `Usable memory` は固定の値なので、回収の確認には使いません。
+
+この実習は `tests/qemu_shell.py` の `verify_processes` に対応します。同じテストは二つのcounterも動かし、両方の値が進むことと、終了後の空きメモリが元に戻ることを確認します。
+
+## 実習3：保存完了と転送中断を区別する
+
+ゲストで次の操作を行います。
+
+```text
+write lesson.txt first
+cat lesson.txt
+put lesson.txt 4
+4142
+.
+cat lesson.txt
+```
+
+`put` には4バイトと宣言しましたが、送った `4142` は2バイトです。このため `Invalid hex data or byte count. File was not changed.` と表示され、最後の `cat` は元の `first` を返すはずです。
+
+この段階で元の内容を守るのは、DlangFSの2世代コピーではなく、その手前にある `source/shell.d` の `HexUpload.finish` です。指定バイト数と実際の受信量を照合し、不一致なら `save` を呼びません。
+
+QEMUを終了し、同じディスクで起動し直します。
+
+```sh
+make run DATA_DISK=build/tutorial-data.img
+```
+
+`cat lesson.txt` で `first` が残っていれば、正常に完了した保存の永続化を確認できました。ただし、これは書き込み途中の電源断を再現する試験ではありません。破損した世代からの復旧は `tests/qemu_shell.py` のディスク破損を用いた検証と、第5章のコミット順序を併せて確認します。
+
+## 実習4：ホストで作ったELFをゲストへ渡す
+
+別のホスト端末で、既存のHelloアプリをビルドします。`wc` と `xxd` はホスト側のコマンドです。
+
+```sh
+make build/apps/hello.elf
+wc -c < build/apps/hello.elf
+xxd -p -c 32 build/apps/hello.elf
+```
+
+ゲストで `put hello.elf バイト数` の「バイト数」を `wc` の結果へ置き換えて入力し、受信案内が出てから `xxd` の出力を貼り付けます。最後に `.` だけの行を送ります。`Saved.` を確認してから実行してください。
+
+```text
+run hello.elf
+```
+
+正常なら `Hello from a D ELF on disk!` が出力され、プロンプトが戻ります。このアプリは出力の前に、不正なシステムコールポインタが拒否されること、初期化済みデータが42であること、BSS末尾がゼロであることも確認します。ソースは `apps/experiments/hello.d` です。
+
+アプリを編集して再ビルドしても、ディスク上のELFは自動更新されません。`make install-apps` は同名ファイルを上書きしないため、変更を反映するときは `put` で転送し直します。インストール用コマンドを使う場合はQEMUを終了し、起動時と同じ `DATA_DISK` を指定します。
+
+## 補足：カーネルで例外を起こして停止させる {#kernel-panic-example}
+
+実習2の `spawn fault` は、Ring 3のプロセスだけを終了させます。今度はRing 0で例外を発生させ、カーネル全体が停止する経路を確認します。
+
+一般に、カーネルが処理を続けられないと判断して停止する動作を *kernel panic* と呼びます。現在のDlang OSには、例外の内容やスタックトレースを表示する専用のpanic関数はありません。カーネル内の例外は `source/privilege.d` の `processTrap` に入り、割り込みを禁止して `hlt` を繰り返します。この実習では、その停止経路を意図的に通します。
+
+### 実習用ディスクを先に用意する
+
+変更前のカーネルで、ホストから一度起動します。
+
+```sh
+make run DATA_DISK=build/panic-demo.img
+```
+
+`dlang>` が出たら `Ctrl+C` でQEMUを終了してください。新規ディスクへのアプリ配置にもゲストのシェルを使うため、先に停止処理を入れるとディスク準備が完了しません。以降も同じ `build/panic-demo.img` を指定します。
+
+### IDTの初期化後に `ud2` を実行する
+
+以下は既存コードの引用ではなく、この実習のための一時的な変更例です。`source/kernel.d` に、次のimportを追加します。`serial` の既存importには `flushSerial` を追加してください。
+
+```d
+import ldc.llvmasm : __asm;
+import serial : initSerial, writeText, flushSerial;
+```
+
+続いて、`kernelMain` 内の `initProcesses()` の呼び出し部分を、次のブロックへ一時的に置き換えます。挿入位置は `desktop.init()` の前です。
+
+```d
+if (!initProcesses())
+{
+    writeText("User processes unavailable.\r\n");
+}
+else
+{
+    writeText("PANIC DEMO: executing UD2 in Ring 0.\r\n");
+    flushSerial();
+    __asm("ud2", "~{memory}");
+}
+```
+
+`ud2` は無効命令例外（`#UD`、ベクタ6）を起こす命令です。`initProcesses` は内部で `initPrivilege` を呼び、IDTを設定します。その成功後に実行することで、このOSの例外ハンドラへ制御を渡せます。シリアルのメッセージは例外の直前に出している目印で、panicハンドラの診断出力ではありません。`flushSerial` は、その送信が終わるのを待ちます。
+
+ホストで再ビルドして起動します。
+
+```sh
+make run DATA_DISK=build/panic-demo.img
+```
+
+期待する結果は、`PANIC DEMO: executing UD2 in Ring 0.` の表示後に停止し、`dlang>` が出ないことです。GUIとシェルの初期化前なので、デスクトップの表示やシェルへの応答もありません。QEMUのプロセス自体は終了しません。
+
+処理は次の順に進みます。
+
+1. Ring 0の `ud2` がベクタ6の例外を起こす。
+2. IDTの入口から `trap!6` を通り、`processTrap` へ進む。
+3. 保存されたCSの下位2ビットが0なので、カーネルからの例外として停止側へ分岐する。
+4. `cli` で通常の割り込みを禁止し、`hlt` とジャンプを繰り返す。スケジューラやシェルへは戻らない。
+
+Ring 3からの例外では保存したユーザー状態をスケジューラへ返し、そのプロセスを終了できます。Ring 0からの例外ではこの復帰を行わないため、OS全体が停止します。ゲストの `halt` コマンドもCPUを止めますが、こちらは例外ハンドラを通らず `haltCpu` を呼ぶ正常な停止操作です。
+
+### 通常の起動へ戻す
+
+ホストの端末で `Ctrl+C` を押してQEMUを終了し、追加した `else` ブロックを削除して `initProcesses()` の呼び出し部分を元に戻します。実習用に追加した `__asm` と `flushSerial` のimportも戻してください。他の編集を残すため、ファイル全体を上書きして戻す必要はありません。
+
+再度 `make run DATA_DISK=build/panic-demo.img` を実行し、`dlang>` に戻ることを確認します。通常起動を復元してから `make test` を実行してください。停止用コードを残した状態では、シェル応答を待つテストは完了しません。
+
+## 期待した結果にならないとき
+
+| 症状 | 最初に確認すること |
+| --- | --- |
+| `Missing config.mk` | ルートで `./configure` を実行したか |
+| OVMFを指定するよう求められる | `config.mk` の `OVMF_CODE` が読み取り可能なx86-64用ファイルを指しているか |
+| `Data disk unavailable.` | 起動時のディスク指定とログを確認する。自動フォーマットによる復旧は行われない |
+| `User processes unavailable.` | プロセス初期化に失敗している。`source/process.d` の `initProcesses` とタイマー初期化を追う |
+| アプリを変更しても表示が変わらない | ビルド成果物をゲストのディスクへ転送し直したか |
+| `run` 後にプロンプトが戻らない | フォアグラウンドのアプリが終了しているか。継続実行するアプリをシェルと並行して扱うには `run NAME &` を使う |
+
+変更後の回帰確認にはホストで `make test` を実行します。通常のデータディスクとは別の使い捨てディスクで、起動、プロセス隔離、ELF検証、仮想メモリ、保存と復旧を確認します。GUIの見た目や操作全体を検証するテストではないので、GUIを変更した場合は `make run-gui DATA_DISK=build/tutorial-data.img` で対象の操作も確かめてください。
