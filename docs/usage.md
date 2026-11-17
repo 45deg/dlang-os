@@ -42,7 +42,7 @@ make run-gui QEMU_DISPLAY=cocoa,zoom-to-fit=on,full-screen=on
 
 Editorで開けるのは、16 KiB以下の印字可能ASCIIとLFで構成された文書です。ファイル名は1〜24文字で、英数字、ピリオド、アンダースコア、ハイフンを使えますが、先頭にピリオドは使えません。
 
-データディスクにはDlangFS4を使い、DlangFS1〜3はマウント対象外です。別のファイルとして新しいディスクを作る場合は `make run-gui DATA_DISK=build/new-data.img` を実行してください。
+データディスクにはDlangFSを使います。別のファイルとして新しいディスクを作る場合は `make run-gui DATA_DISK=build/new-data.img` を実行してください。
 
 ## シリアルシェル
 

@@ -32,7 +32,7 @@ make test-phobos
 - `libphobos-output.a`：必要なPhobos・druntimeモジュールの部分アーカイブ。
 - 各ELFのリンクマップ、ビルドコマンドとソースのバージョンを記録した `report.json`、ライセンスとNOTICE。
 
-`test-phobos` は使い捨てのDlangFS4ディスクにELFを保存し、再起動して通常のローダーから実行します。出力をバイト単位で照合するほか、例外を捕捉した後の終了、再実行時のストリーム初期化、終了後のページ回収も確認します。Hello, worldの出力は `Hello, world!` と改行です。
+`test-phobos` は使い捨てのDlangFSディスクにELFを保存し、再起動して通常のローダーから実行します。出力をバイト単位で照合するほか、例外を捕捉した後の終了、再実行時のストリーム初期化、終了後のページ回収も確認します。Hello, worldの出力は `Hello, world!` と改行です。
 
 ## 移植範囲
 
