@@ -1,4 +1,4 @@
-/// mount validates DlangFS4 headers and loadEntries recovers the last committed state of each slot.
+/// mount validates DlangFS headers and loadEntries recovers the last committed state of each slot.
 /// commit writes the file data first and publishes its generation number and checksum last.
 module filesystem;
 
@@ -71,7 +71,7 @@ bool mount()
         Sector first;
         if (!candidate.read(0, first)) continue;
         const magic = (cast(const(char)*) first.ptr)[0 .. 8];
-        if (!equal(magic, "DLANGFS4"))
+        if (!equal(magic, "DLANGFS1"))
             continue;
         // Avoid choosing a write target by attachment order when several disks could contain DlangFS.
         if (found) return false;
@@ -98,7 +98,7 @@ private bool readLayout(ref const Sector raw)
     header.raw = raw;
     const bytes = (cast(const(char)*) raw.ptr)[0 .. sectorBytes];
     const fields = header.fields;
-    if (!equal(fields.magic[], "DLANGFS4") || fields.versionNumber != 4
+    if (!equal(fields.magic[], "DLANGFS1") || fields.versionNumber != 1
         || fields.sectorSize != sectorBytes
         || fields.metadataBytes != Metadata.sizeof
         || fields.nameBytes != diskNameBytes

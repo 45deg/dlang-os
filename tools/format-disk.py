@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a DlangFS4 image without overwriting existing files.
+"""Create a DlangFS image without overwriting existing files.
 header validates the layout; main writes a sparse image with two generations per slot.
 """
 
@@ -19,7 +19,7 @@ def header(slots=16, file_bytes=1048576, records_lba=1, copy_sectors=None):
             and records_lba + slots * 2 * copy_sectors <= 0x100000000):
         raise ValueError("Invalid volume layout")
     result = bytearray(SECTOR_BYTES)
-    struct.pack_into('<8s9I', result, 0, b'DLANGFS4', 4, SECTOR_BYTES, slots,
+    struct.pack_into('<8s9I', result, 0, b'DLANGFS1', 1, SECTOR_BYTES, slots,
                      file_bytes, records_lba, copy_sectors, 36, 24, 0)
     checksum = 2166136261
     for value in result[:40] + result[44:]:

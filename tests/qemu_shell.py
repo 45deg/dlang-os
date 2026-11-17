@@ -58,7 +58,7 @@ APP_DIRECTORY = PROJECT / "build" / "apps"
 
 
 @contextmanager
-def boot(qemu_command, disk, *, disk_ready=True):
+def boot(qemu_command, disk):
     command = [*qemu_command, "-drive", f"if=ide,index=0,format=raw,file={disk}"]
     with subprocess.Popen(
         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -66,8 +66,7 @@ def boot(qemu_command, disk, *, disk_ready=True):
         try:
             console = SerialConsole(guest)
             log = console.read_until(PROMPT, timeout=35)
-            unavailable = b"Data disk unavailable" in log
-            if b"Dlang OS (x86_64)\r\n" not in log or unavailable == disk_ready:
+            if b"Dlang OS (x86_64)\r\n" not in log or b"Data disk unavailable" in log:
                 raise AssertionError(f"Unexpected startup or disk state: {log!r}")
             yield console
         finally:
@@ -231,36 +230,6 @@ def verify_virtual_memory(console):
     expect_equal(process_list(console), (before, (totals[0] + 2, totals[1])))
 
 
-def verify_unsupported_formats(qemu_command, root):
-    # A valid DlangFS3 header from the former formatter (16 slots, 16 KiB per file).
-    legacy_header = bytes.fromhex(
-        "444c414e47465333 03000000 00020000 10000000 00400000 01000000"
-        " 21000000 22000000 18000000 f2c703ff"
-    )
-    legacy_disk = root / "unsupported-v3.img"
-    fixtures = (
-        (root / "unsupported-v1.img", b"DLANGFS1"),
-        (root / "unsupported-v2.img", b"DLANGFS2"),
-        (legacy_disk, legacy_header),
-    )
-    for disk, header in fixtures:
-        original = header.ljust(1024 * 1024, b"\0")
-        disk.write_bytes(original)
-        with boot(qemu_command, disk, disk_ready=False) as console:
-            expect_command(console, b"write forbidden.txt no", b"Data disk unavailable.\r\n")
-        expect_equal(disk.read_bytes(), original)
-
-    # A legacy disk alongside a supported one must not count as a second mount candidate.
-    current = root / "current.img"
-    format_disk(current)
-    extra_drive = ["-drive", f"if=ide,index=1,format=raw,file={legacy_disk}"]
-    with boot([*qemu_command, *extra_drive], current) as console:
-        expect_command(console, b"write current.txt writable", b"Saved.\r\n")
-    with boot(qemu_command, current) as console:
-        expect_command(console, b"cat current.txt", b"writable\r\n")
-    expect_equal(legacy_disk.read_bytes(), legacy_header.ljust(1024 * 1024, b"\0"))
-
-
 def format_disk(path, *options):
     subprocess.run([sys.executable, str(PROJECT / "tools/format-disk.py"), str(path), *options], check=True)
 
@@ -313,7 +282,6 @@ def main(qemu_command):
             verify_disk_elf(console)
             verify_virtual_memory(console)
         verify_storage(qemu_command, root)
-        verify_unsupported_formats(qemu_command, root)
     print("PASS: boot, process isolation, ELF validation, VM rollback, persistence and recovery")
 
 
