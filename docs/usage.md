@@ -20,6 +20,8 @@ make run-gui QEMU_DISPLAY=cocoa,zoom-to-fit=on,full-screen=on
 
 起動すると、壁紙、アプリアイコン、タスクバーを備えたデスクトップが表示されます。アプリはデスクトップのアイコン、またはタスクバー左の **Apps** から開けます。`F1` で **Apps** を開き、`↑`・`↓` と `Enter` で選ぶこともできます。
 
+![Dlang OSのデスクトップ画面](screenshot.png)
+
 画面の文字はIBM Plex Mono Mediumを元に、通常サイズと大サイズの字形を別々に作成しています。字形には輪郭の中間色を含み、収録文字は印字可能ASCIIです。ライセンスと生成手順は [assets/fonts/README.md](../assets/fonts/README.md) を参照してください。
 
 - **Files**（F5）でファイル一覧を開きます。ファイルを選んで **Open** または `Enter` を押すと、エディタに内容を表示します。
