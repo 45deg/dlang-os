@@ -58,7 +58,6 @@ private ubyte tableByte(ref const(ubyte)* cursor) nothrow @nogc
     return *cursor++;
 }
 
-// LSDA offsets fit in 32 bits because this ELF is limited to 16 KiB.
 private long tableLeb(ref const(ubyte)* cursor, bool signedValue = false) nothrow @nogc
 {
     long value;

@@ -1,25 +1,32 @@
 /// Implement the memory routines LDC uses to copy, initialize, and compare arrays and structs.
 module runtime;
 
-import core.volatile : volatileLoad, volatileStore;
+import ldc.llvmasm : __asm;
 
 extern(C) nothrow @nogc:
 
+// x86-64 ABI では DF はクリア済み。LLVM が memcpy や memset への自己呼び出しを生成しないよう命令を直接指定する。
 void* memcpy(void* destination, const(void)* source, size_t count)
 {
-    auto output = cast(ubyte*) destination;
-    auto input = cast(const(ubyte)*) source;
-    // Prevent LLVM from rewriting this implementation as a call to memcpy itself.
-    foreach (i; 0 .. count)
-        volatileStore(output + i, input[i]);
+    // QEMU TCG での反復回数を抑えるため、8 バイトずつ転送してから残りをコピーする。
+    __asm(q{
+        rep movsq
+        movq $3, %rcx
+        rep movsb
+    }, "{rdi},{rsi},{rcx},r,~{rdi},~{rsi},~{rcx},~{memory}",
+        destination, source, count / ulong.sizeof, count % ulong.sizeof);
     return destination;
 }
 
 void* memset(void* destination, int value, size_t count)
 {
-    auto output = cast(ubyte*) destination;
-    foreach (i; 0 .. count)
-        volatileStore(output + i, cast(ubyte) value);
+    const pattern = cast(ubyte) value * 0x0101_0101_0101_0101UL;
+    __asm(q{
+        rep stosq
+        movq $3, %rcx
+        rep stosb
+    }, "{rdi},{rax},{rcx},r,~{rdi},~{rcx},~{memory}",
+        destination, pattern, count / ulong.sizeof, count % ulong.sizeof);
     return destination;
 }
 

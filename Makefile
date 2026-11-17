@@ -64,8 +64,6 @@ build/apps/monitor.elf: apps/builtin/monitor.d
 build/apps/files.elf: GUI_VERSION := FilesApp
 build/apps/files.elf: apps/builtin/file_browser.d
 build/apps/editor.elf: GUI_VERSION := EditorApp
-# Keep Editor compatible with existing 16 KiB DlangFS3 volumes.
-build/apps/editor.elf: APP_D_FLAGS := $(filter-out -O2,$(APP_D_FLAGS)) -Oz
 build/apps/editor.elf: apps/builtin/editor.d
 
 $(BUILTIN_GUI_ELFS): $(GUI_INPUTS)

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import select
+from struct import unpack_from
 import subprocess
 import sys
 import tempfile
@@ -231,13 +232,33 @@ def verify_virtual_memory(console):
 
 
 def verify_unsupported_formats(qemu_command, root):
-    for version in (1, 2):
-        disk = root / f"unsupported-v{version}.img"
-        original = f"DLANGFS{version}".encode() + bytes(1024 * 1024 - 8)
+    # A valid DlangFS3 header from the former formatter (16 slots, 16 KiB per file).
+    legacy_header = bytes.fromhex(
+        "444c414e47465333 03000000 00020000 10000000 00400000 01000000"
+        " 21000000 22000000 18000000 f2c703ff"
+    )
+    legacy_disk = root / "unsupported-v3.img"
+    fixtures = (
+        (root / "unsupported-v1.img", b"DLANGFS1"),
+        (root / "unsupported-v2.img", b"DLANGFS2"),
+        (legacy_disk, legacy_header),
+    )
+    for disk, header in fixtures:
+        original = header.ljust(1024 * 1024, b"\0")
         disk.write_bytes(original)
         with boot(qemu_command, disk, disk_ready=False) as console:
             expect_command(console, b"write forbidden.txt no", b"Data disk unavailable.\r\n")
         expect_equal(disk.read_bytes(), original)
+
+    # A legacy disk alongside a supported one must not count as a second mount candidate.
+    current = root / "current.img"
+    format_disk(current)
+    extra_drive = ["-drive", f"if=ide,index=1,format=raw,file={legacy_disk}"]
+    with boot([*qemu_command, *extra_drive], current) as console:
+        expect_command(console, b"write current.txt writable", b"Saved.\r\n")
+    with boot(qemu_command, current) as console:
+        expect_command(console, b"cat current.txt", b"writable\r\n")
+    expect_equal(legacy_disk.read_bytes(), legacy_header.ljust(1024 * 1024, b"\0"))
 
 
 def format_disk(path, *options):
@@ -245,30 +266,40 @@ def format_disk(path, *options):
 
 
 def verify_storage(command, root):
-    # Both supported formats must preserve writes and recover the previous generation.
-    for version in (3, 4):
-        disk = root / f"storage-v{version}.img"
-        format_disk(disk, "--format-version", str(version))
-        payload = bytes(range(256)) * (64 if version == 3 else 4096)
-        with boot(command, disk) as console:
-            expect_command(console, b"write history.txt first version", b"Saved.\r\n")
-            expect_command(console, b"write history.txt second version", b"Saved.\r\n")
-            put_file(console, b"full.bin", payload)
-            # An interrupted upload must not replace the committed contents.
-            begin_upload(console, b"history.txt", 3)
-            console.send(b"41\r\n.\r\n")
-            expect_equal(console.read_until(PROMPT),
-                         b"Invalid hex data or byte count. File was not changed.\r\n")
-        saved = disk.read_bytes()
-        with boot(command, disk) as console:
-            expect_command(console, b"cat history.txt", b"second version\r\n")
-            expect_file_bytes(console, b"full.bin", payload)
-        expect_equal(disk.read_bytes(), saved)
-        damaged = bytearray(saved)
-        damaged[damaged.index(b"second version")] ^= 1
-        disk.write_bytes(damaged)
-        with boot(command, disk) as console:
-            expect_command(console, b"cat history.txt", b"first version\r\n")
+    disk = root / "storage.img"
+    format_disk(disk, "--slots", "3")
+    payload = bytes(range(256)) * 4096
+    with boot(command, disk) as console:
+        expect_command(console, b"write history.txt first version", b"Saved.\r\n")
+        expect_command(console, b"write history.txt second version", b"Saved.\r\n")
+        put_file(console, b"full.bin", payload)
+        # An interrupted upload must not replace the committed contents.
+        begin_upload(console, b"history.txt", 3)
+        console.send(b"41\r\n.\r\n")
+        expect_equal(console.read_until(PROMPT),
+                     b"Invalid hex data or byte count. File was not changed.\r\n")
+    saved = disk.read_bytes()
+    with boot(command, disk) as console:
+        expect_command(console, b"cat history.txt", b"second version\r\n")
+        expect_file_bytes(console, b"full.bin", payload)
+    expect_equal(disk.read_bytes(), saved)
+    damaged = bytearray(saved)
+    damaged[damaged.index(b"second version")] ^= 1
+    disk.write_bytes(damaged)
+    with boot(command, disk) as console:
+        expect_command(console, b"cat history.txt", b"first version\r\n")
+
+    # 空きスロット (slot 2) の B 側だけに書きかけのメタデータを残す。
+    records_lba, copy_sectors = unpack_from("<II", saved, 24)
+    first_write = (records_lba + (2 * 2 + 1) * copy_sectors) * 512
+    damaged[first_write + 4] = 1  # シーケンス番号は 0 のままなので無効なレコード。
+    disk.write_bytes(damaged)
+    with boot(command, disk) as console:
+        expect_command(console, b"cat history.txt", b"first version\r\n")
+        expect_file_bytes(console, b"full.bin", payload)
+        expect_command(console, b"write retry.txt recovered", b"Saved.\r\n")
+    with boot(command, disk) as console:
+        expect_command(console, b"cat retry.txt", b"recovered\r\n")
 
 
 def main(qemu_command):
